@@ -27,6 +27,10 @@ func main() {
 		err = cmdRefresh()
 	case "doctor":
 		err = cmdDoctor()
+	case "setup":
+		err = cmdSetup(os.Args[2:])
+	case "uninstall":
+		err = cmdUninstall(os.Args[2:])
 	case "update-state":
 		err = cmdUpdateState(os.Args[2:])
 	case "version", "--version", "-v":
@@ -52,20 +56,20 @@ Usage:
   cc-pane <command> [options]
 
 Commands:
+  setup          Configure Claude Code hooks and tmux keybinding
   ls             List all Claude Code sessions
   pick           Select a session with fzf and jump to it
   show           Show state and pane output for a specific pane
   jump           Jump to a specific pane
   refresh        Clean up stale state files
   doctor         Check dependencies and configuration
+  uninstall      Remove cc-pane hooks and tmux keybinding
   update-state   Update pane state (called by Claude Code hooks)
   version        Show version
   help           Show this help
 
 Options:
-  ls --json      Output as JSON
-  jump --pane ID Pane ID to jump to (e.g., %12)
-  update-state --event TYPE
-                 Event type: UserPromptSubmit, PreToolUse, PostToolUse, Stop, Notification
+  setup --dry-run   Show what would be changed without writing
+  uninstall --purge Also remove state directory
 `)
 }

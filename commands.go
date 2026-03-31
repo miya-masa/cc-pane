@@ -307,3 +307,318 @@ func cmdUpdateState(args []string) error {
 
 	return writeState(ps)
 }
+
+// --- setup / uninstall ---
+
+const ccPaneMarker = "cc-pane"
+
+// requiredHookEvents lists all Claude Code hook events cc-pane needs.
+var requiredHookEvents = []string{
+	"UserPromptSubmit",
+	"PreToolUse",
+	"PostToolUse",
+	"PermissionRequest",
+	"Notification",
+	"Stop",
+}
+
+const tmuxKeybinding = `bind L display-popup -w 90% -h 50% -E "cc-pane pick"`
+
+func claudeSettingsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".claude", "settings.json")
+}
+
+func tmuxConfPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".tmux.conf")
+}
+
+func cmdSetup(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "show what would be changed without writing")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	anyChange := false
+
+	// 1. Claude Code hooks
+	hooksChanged, err := setupClaudeHooks(*dryRun)
+	if err != nil {
+		return fmt.Errorf("claude hooks: %w", err)
+	}
+	if hooksChanged {
+		anyChange = true
+	}
+
+	// 2. tmux keybinding
+	tmuxChanged, err := setupTmuxKeybinding(*dryRun)
+	if err != nil {
+		return fmt.Errorf("tmux config: %w", err)
+	}
+	if tmuxChanged {
+		anyChange = true
+	}
+
+	if !anyChange {
+		fmt.Println("Everything is already configured.")
+	} else if *dryRun {
+		fmt.Println("\nRun 'cc-pane setup' (without --dry-run) to apply.")
+	} else {
+		fmt.Println("\nSetup complete. Restart Claude Code sessions for hooks to take effect.")
+	}
+	return nil
+}
+
+func setupClaudeHooks(dryRun bool) (bool, error) {
+	path := claudeSettingsPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Create minimal settings with hooks
+			data = []byte("{}")
+		} else {
+			return false, fmt.Errorf("read %s: %w", path, err)
+		}
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return false, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	changed := mergeHooks(settings)
+	if !changed {
+		fmt.Println("  ✓ Claude Code hooks already configured")
+		return false, nil
+	}
+
+	if dryRun {
+		fmt.Println("  ~ Would add cc-pane hooks to", path)
+		return true, nil
+	}
+
+	// Backup before writing
+	backupPath := path + ".bak"
+	if err := os.WriteFile(backupPath, data, 0o644); err != nil {
+		return false, fmt.Errorf("backup %s: %w", backupPath, err)
+	}
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return false, fmt.Errorf("marshal settings: %w", err)
+	}
+	out = append(out, '\n')
+
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+
+	fmt.Printf("  ✓ Added cc-pane hooks to %s (backup: %s)\n", path, backupPath)
+	return true, nil
+}
+
+// mergeHooks adds cc-pane hook entries to the settings hooks map.
+// Returns true if any changes were made.
+func mergeHooks(settings map[string]any) bool {
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		hooks = map[string]any{}
+		settings["hooks"] = hooks
+	}
+
+	changed := false
+	for _, event := range requiredHookEvents {
+		entries := toSlice(hooks[event])
+		if containsCCPane(entries) {
+			continue
+		}
+
+		hook := map[string]any{
+			"hooks": []any{
+				map[string]any{
+					"type":    "command",
+					"command": fmt.Sprintf("cc-pane update-state --event %s", event),
+					"async":   true,
+				},
+			},
+		}
+		// Notification needs a catch-all matcher
+		if event == "Notification" {
+			hook["matcher"] = ""
+		}
+
+		entries = append(entries, hook)
+		hooks[event] = entries
+		changed = true
+	}
+	return changed
+}
+
+// containsCCPane checks if any entry in a hooks array references cc-pane.
+func containsCCPane(entries []any) bool {
+	for _, entry := range entries {
+		data, _ := json.Marshal(entry)
+		if strings.Contains(string(data), ccPaneMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// toSlice safely converts an any value to []any.
+func toSlice(v any) []any {
+	if v == nil {
+		return nil
+	}
+	if s, ok := v.([]any); ok {
+		return s
+	}
+	return nil
+}
+
+func setupTmuxKeybinding(dryRun bool) (bool, error) {
+	path := tmuxConfPath()
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	content := string(data)
+	if strings.Contains(content, ccPaneMarker) {
+		fmt.Println("  ✓ tmux keybinding already configured")
+		return false, nil
+	}
+
+	if dryRun {
+		fmt.Println("  ~ Would add keybinding to", path)
+		return true, nil
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	line := fmt.Sprintf("\n##### cc-pane #####\n%s\n", tmuxKeybinding)
+	if _, err := f.WriteString(line); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+
+	fmt.Printf("  ✓ Added keybinding to %s (prefix+L)\n", path)
+	return true, nil
+}
+
+func cmdUninstall(args []string) error {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	purge := fs.Bool("purge", false, "also remove state directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	// 1. Remove hooks from settings.json
+	if err := uninstallClaudeHooks(); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! claude hooks: %v\n", err)
+	}
+
+	// 2. Remove tmux keybinding
+	if err := uninstallTmuxKeybinding(); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! tmux config: %v\n", err)
+	}
+
+	// 3. Optionally remove state directory
+	if *purge {
+		dir := stateDir()
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "  ! remove %s: %v\n", dir, err)
+		} else {
+			fmt.Printf("  ✓ Removed state directory %s\n", dir)
+		}
+	}
+
+	fmt.Println("\nUninstall complete.")
+	return nil
+}
+
+func uninstallClaudeHooks() error {
+	path := claudeSettingsPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return err
+	}
+
+	hooks, ok := settings["hooks"].(map[string]any)
+	if !ok {
+		fmt.Println("  ✓ No hooks to remove")
+		return nil
+	}
+
+	changed := false
+	for event, val := range hooks {
+		entries := toSlice(val)
+		var filtered []any
+		for _, entry := range entries {
+			entryJSON, _ := json.Marshal(entry)
+			if !strings.Contains(string(entryJSON), ccPaneMarker) {
+				filtered = append(filtered, entry)
+			} else {
+				changed = true
+			}
+		}
+		hooks[event] = filtered
+	}
+
+	if !changed {
+		fmt.Println("  ✓ No cc-pane hooks found")
+		return nil
+	}
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("  ✓ Removed cc-pane hooks from %s\n", path)
+	return nil
+}
+
+func uninstallTmuxKeybinding() error {
+	path := tmuxConfPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var filtered []string
+	changed := false
+	for _, line := range lines {
+		if strings.Contains(line, ccPaneMarker) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+
+	if !changed {
+		fmt.Println("  ✓ No tmux keybinding found")
+		return nil
+	}
+
+	if err := os.WriteFile(path, []byte(strings.Join(filtered, "\n")), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("  ✓ Removed cc-pane keybinding from %s\n", path)
+	return nil
+}

@@ -16,12 +16,12 @@ When running Claude Code in multiple tmux panes simultaneously, it's hard to tel
 
 ## Dependencies
 
-| Tool | Required | Purpose |
-|------|----------|---------|
-| tmux | Yes      | Pane management |
+| Tool | Required | Purpose                             |
+| ---- | -------- | ----------------------------------- |
+| tmux | Yes      | Pane management                     |
 | fzf  | Yes      | Interactive picker (`pick` command) |
-| jq   | No       | Optional (fzf preview, scripting) |
-| git  | No       | Branch name detection |
+| jq   | No       | Optional (fzf preview, scripting)   |
+| git  | No       | Branch name detection               |
 
 ## Installation
 
@@ -40,95 +40,55 @@ This installs the binary to `$GOPATH/bin/cc-pane`.
 go install github.com/miya-masa/cc-pane@latest
 ```
 
-## Claude Code Hook Setup
+## Setup
 
-Add the following to `~/.claude/settings.json`:
+After installing the binary, run:
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cc-pane update-state --event PreToolUse",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cc-pane update-state --event PostToolUse",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "PermissionRequest": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cc-pane update-state --event PermissionRequest",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cc-pane update-state --event Notification",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cc-pane update-state --event Stop",
-            "async": true
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "cc-pane update-state --event UserPromptSubmit",
-            "async": true
-          }
-        ]
-      }
-    ]
-  }
-}
+```bash
+cc-pane setup
 ```
 
-> **Note**: If you already have hooks configured, add the cc-pane entries to each event's array.
+This automatically:
+
+1. Adds cc-pane hooks to `~/.claude/settings.json` (existing hooks are preserved)
+2. Adds a tmux keybinding (`prefix+L`) to `~/.tmux.conf`
+
+Preview changes before applying:
+
+```bash
+cc-pane setup --dry-run
+```
 
 ### Verify Setup
 
 ```bash
 cc-pane doctor
 ```
+
+### Uninstall
+
+```bash
+cc-pane uninstall          # remove hooks and keybinding
+cc-pane uninstall --purge  # also remove state files
+```
+
+### Manual Setup
+
+If you prefer manual configuration, add the following hooks to `~/.claude/settings.json`:
+
+<details>
+<summary>Hook configuration JSON</summary>
+
+Each event needs a cc-pane entry with `"async": true`:
+
+- `UserPromptSubmit`: `cc-pane update-state --event UserPromptSubmit`
+- `PreToolUse`: `cc-pane update-state --event PreToolUse`
+- `PostToolUse`: `cc-pane update-state --event PostToolUse`
+- `PermissionRequest`: `cc-pane update-state --event PermissionRequest`
+- `Notification` (matcher: `""`): `cc-pane update-state --event Notification`
+- `Stop`: `cc-pane update-state --event Stop`
+
+</details>
 
 ## Usage
 
@@ -185,15 +145,15 @@ cc-pane doctor
 
 ## State Transitions
 
-| Hook Event | State | Description |
-|------------|-------|-------------|
-| UserPromptSubmit | `running` | User submitted a prompt |
-| PreToolUse | `running` | Tool is about to execute |
-| PostToolUse | `running` | Tool completed |
-| PermissionRequest | `approval_waiting` | Claude is waiting for user to approve a tool |
-| Stop | `waiting_input` | Claude stopped responding, waiting for user |
-| Notification (`permission_prompt`) | `approval_waiting` | Permission prompt notification |
-| Notification (`idle_prompt`) | `waiting_input` | Idle prompt notification |
+| Hook Event                         | State              | Description                                  |
+| ---------------------------------- | ------------------ | -------------------------------------------- |
+| UserPromptSubmit                   | `running`          | User submitted a prompt                      |
+| PreToolUse                         | `running`          | Tool is about to execute                     |
+| PostToolUse                        | `running`          | Tool completed                               |
+| PermissionRequest                  | `approval_waiting` | Claude is waiting for user to approve a tool |
+| Stop                               | `waiting_input`    | Claude stopped responding, waiting for user  |
+| Notification (`permission_prompt`) | `approval_waiting` | Permission prompt notification               |
+| Notification (`idle_prompt`)       | `waiting_input`    | Idle prompt notification                     |
 
 ## State Priority
 
@@ -237,11 +197,11 @@ Example file contents:
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CLAUDE_PANE_STATE_DIR` | State file directory | `~/.cache/claude-pane-state/` |
-| `NO_COLOR` | Disable color output when set | — |
-| `TMUX_PANE` | Set automatically by tmux (used by hooks) | — |
+| Variable                | Description                               | Default                       |
+| ----------------------- | ----------------------------------------- | ----------------------------- |
+| `CLAUDE_PANE_STATE_DIR` | State file directory                      | `~/.cache/claude-pane-state/` |
+| `NO_COLOR`              | Disable color output when set             | —                             |
+| `TMUX_PANE`             | Set automatically by tmux (used by hooks) | —                             |
 
 ## tmux Keybinding Examples
 
@@ -266,6 +226,7 @@ bind L display-popup -E "cc-pane pick"
 ### Detecting approval_waiting
 
 Detected definitively via two mechanisms:
+
 - `PermissionRequest` event — fires when Claude Code asks the user to approve a tool
 - `Notification` with type `permission_prompt` — notification-level signal for the same
 
