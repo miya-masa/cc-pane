@@ -14,8 +14,21 @@ const (
 	colorRed    = "\033[31m"
 	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
+	colorDim    = "\033[2m"
 	colorBold   = "\033[1m"
 )
+
+// isStaleWaiting reports whether the pane is a stale waiting_input session.
+func isStaleWaiting(ps *PaneState) bool {
+	if ps.State != StateWaitingInput {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, ps.LastUpdatedAt)
+	if err != nil {
+		return true
+	}
+	return time.Since(t) > waitingInputStaleThreshold
+}
 
 // stateIcon returns a Unicode icon for the state.
 func stateIcon(state string) string {
@@ -31,6 +44,14 @@ func stateIcon(state string) string {
 	}
 }
 
+// paneIcon returns a Unicode icon considering staleness.
+func paneIcon(ps *PaneState) string {
+	if isStaleWaiting(ps) {
+		return "⚪"
+	}
+	return stateIcon(ps.State)
+}
+
 func stateColor(state string) string {
 	switch state {
 	case StateApprovalWaiting:
@@ -42,6 +63,14 @@ func stateColor(state string) string {
 	default:
 		return ""
 	}
+}
+
+// paneColor returns the ANSI color considering staleness.
+func paneColor(ps *PaneState) string {
+	if isStaleWaiting(ps) {
+		return colorDim
+	}
+	return stateColor(ps.State)
 }
 
 // stateLabel returns the state string with a background agent suffix if applicable.
@@ -122,7 +151,7 @@ func renderTable(states []*PaneState, useColor bool) {
 	fmt.Println(strings.Repeat("─", 100))
 
 	for _, ps := range states {
-		icon := stateIcon(ps.State)
+		icon := paneIcon(ps)
 		cwd := shortenPath(ps.Cwd, 38)
 		updated := formatRelativeTime(ps.LastUpdatedAt)
 		session := truncate(ps.Session, 20)
@@ -132,7 +161,7 @@ func renderTable(states []*PaneState, useColor bool) {
 			icon, label, session, ps.WindowIndex, ps.PaneID, cwd, updated)
 
 		if useColor {
-			c := stateColor(ps.State)
+			c := paneColor(ps)
 			if c != "" {
 				fmt.Printf("%s%s%s\n", c, line, colorReset)
 			} else {
@@ -148,7 +177,7 @@ func renderTable(states []*PaneState, useColor bool) {
 // First field is pane_id (for extraction), remaining fields are padded for display.
 func renderTSV(states []*PaneState) {
 	for _, ps := range states {
-		icon := stateIcon(ps.State)
+		icon := paneIcon(ps)
 		cwd := shortenPath(ps.Cwd, 40)
 		updated := formatRelativeTime(ps.LastUpdatedAt)
 		session := truncate(ps.Session, 22)

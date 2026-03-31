@@ -33,6 +33,43 @@ func TestStatePriority(t *testing.T) {
 	}
 }
 
+func TestSortPriority(t *testing.T) {
+	now := time.Now().Format(time.RFC3339)
+	stale := time.Now().Add(-11 * time.Minute).Format(time.RFC3339)
+
+	tests := []struct {
+		name     string
+		ps       *PaneState
+		expected int
+	}{
+		{"approval_waiting", &PaneState{State: StateApprovalWaiting, LastUpdatedAt: now}, 0},
+		{"recent waiting_input", &PaneState{State: StateWaitingInput, LastUpdatedAt: now}, 1},
+		{"running", &PaneState{State: StateRunning, LastUpdatedAt: now}, 2},
+		{"stale waiting_input", &PaneState{State: StateWaitingInput, LastUpdatedAt: stale}, 3},
+		{"invalid timestamp waiting_input", &PaneState{State: StateWaitingInput, LastUpdatedAt: "invalid"}, 3},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sortPriority(tt.ps)
+			if got != tt.expected {
+				t.Errorf("sortPriority() = %d, want %d", got, tt.expected)
+			}
+		})
+	}
+
+	// Verify ordering: approval > recent_waiting > running > stale_waiting
+	approval := sortPriority(&PaneState{State: StateApprovalWaiting, LastUpdatedAt: now})
+	recentWait := sortPriority(&PaneState{State: StateWaitingInput, LastUpdatedAt: now})
+	running := sortPriority(&PaneState{State: StateRunning, LastUpdatedAt: now})
+	staleWait := sortPriority(&PaneState{State: StateWaitingInput, LastUpdatedAt: stale})
+
+	if !(approval < recentWait && recentWait < running && running < staleWait) {
+		t.Errorf("expected approval(%d) < recentWait(%d) < running(%d) < staleWait(%d)",
+			approval, recentWait, running, staleWait)
+	}
+}
+
 func TestSanitizePaneID(t *testing.T) {
 	tests := []struct {
 		input, expected string

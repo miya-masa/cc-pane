@@ -47,6 +47,29 @@ func StatePriority(state string) int {
 	}
 }
 
+// waitingInputStaleThreshold is the duration after which a waiting_input session
+// is considered stale and sorted below running sessions.
+const waitingInputStaleThreshold = 10 * time.Minute
+
+// sortPriority returns display priority considering both state and staleness.
+// Stale waiting_input sessions are ranked below running sessions.
+func sortPriority(ps *PaneState) int {
+	switch ps.State {
+	case StateApprovalWaiting:
+		return 0
+	case StateWaitingInput:
+		t, err := time.Parse(time.RFC3339, ps.LastUpdatedAt)
+		if err != nil || time.Since(t) > waitingInputStaleThreshold {
+			return 3 // stale
+		}
+		return 1 // recent
+	case StateRunning:
+		return 2
+	default:
+		return 4
+	}
+}
+
 func stateDir() string {
 	if dir := os.Getenv("CLAUDE_PANE_STATE_DIR"); dir != "" {
 		return dir
@@ -128,8 +151,8 @@ func listStates() ([]*PaneState, error) {
 	}
 
 	sort.Slice(states, func(i, j int) bool {
-		pi := StatePriority(states[i].State)
-		pj := StatePriority(states[j].State)
+		pi := sortPriority(states[i])
+		pj := sortPriority(states[j])
 		if pi != pj {
 			return pi < pj
 		}
