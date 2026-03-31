@@ -16,9 +16,10 @@ type TmuxPane struct {
 	PaneTitle      string
 	Cwd            string
 	CurrentCommand string
+	PanePID        string
 }
 
-const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}\t#{pane_current_command}"
+const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}"
 
 // getCurrentPane returns info about the pane identified by $TMUX_PANE.
 func getCurrentPane() (*TmuxPane, error) {
@@ -48,8 +49,8 @@ func getPaneByID(paneID string) (*TmuxPane, error) {
 }
 
 func parseTmuxPaneLine(line string) (*TmuxPane, error) {
-	parts := strings.SplitN(line, "\t", 7)
-	if len(parts) < 7 {
+	parts := strings.SplitN(line, "\t", 8)
+	if len(parts) < 8 {
 		return nil, fmt.Errorf("unexpected tmux output format: %q", line)
 	}
 	return &TmuxPane{
@@ -60,6 +61,7 @@ func parseTmuxPaneLine(line string) (*TmuxPane, error) {
 		PaneTitle:      parts[4],
 		Cwd:            parts[5],
 		CurrentCommand: parts[6],
+		PanePID:        parts[7],
 	}, nil
 }
 
@@ -79,6 +81,23 @@ func isShellCommand(cmd string) bool {
 		return true
 	}
 	return false
+}
+
+// pidsWithChildren returns a set of PIDs that have at least one child process.
+// Uses a single ps invocation to check all PIDs efficiently.
+func pidsWithChildren() map[string]bool {
+	out, err := exec.Command("ps", "-eo", "ppid=").Output()
+	if err != nil {
+		return nil
+	}
+	result := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		ppid := strings.TrimSpace(line)
+		if ppid != "" {
+			result[ppid] = true
+		}
+	}
+	return result
 }
 
 // listAllPanes returns all tmux panes across all sessions.

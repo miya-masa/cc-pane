@@ -226,10 +226,13 @@ func determineState(event string, data map[string]any) string {
 }
 
 // reconcileSingleState checks if a pane state should be corrected
-// based on the pane's current running command.
+// based on the pane's current running command and whether the shell has children.
+// A pane is considered "exited" only when the current command is a shell AND
+// the shell has no child processes. This avoids false positives when Claude Code
+// is executing a Bash tool (pane_current_command temporarily shows "bash").
 // Returns true if the state was changed.
-func reconcileSingleState(ps *PaneState, currentCommand string) bool {
-	if ps.State != StateDone && isShellCommand(currentCommand) {
+func reconcileSingleState(ps *PaneState, currentCommand string, shellHasChildren bool) bool {
+	if ps.State != StateDone && isShellCommand(currentCommand) && !shellHasChildren {
 		ps.State = StateDone
 		ps.Preview = "exited"
 		return true
@@ -255,6 +258,8 @@ func reconcileStates(states []*PaneState, panes []TmuxPane) []*PaneState {
 		paneMap[p.PaneID] = p
 	}
 
+	parentPIDs := pidsWithChildren()
+
 	var result []*PaneState
 	for _, ps := range states {
 		pane, exists := paneMap[ps.PaneID]
@@ -265,7 +270,7 @@ func reconcileStates(states []*PaneState, panes []TmuxPane) []*PaneState {
 			continue
 		}
 
-		if reconcileSingleState(ps, pane.CurrentCommand) {
+		if reconcileSingleState(ps, pane.CurrentCommand, parentPIDs[pane.PanePID]) {
 			if err := writeState(ps); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: failed to update state for %s: %v\n", ps.PaneID, err)
 			}

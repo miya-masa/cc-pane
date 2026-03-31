@@ -479,7 +479,7 @@ func TestIsShellCommand(t *testing.T) {
 }
 
 func TestParseTmuxPaneLine_WithCommand(t *testing.T) {
-	line := "main\t0\tdev\t%12\tclaude-code\t/home/user/project\tzsh"
+	line := "main\t0\tdev\t%12\tclaude-code\t/home/user/project\tzsh\t12345"
 	pane, err := parseTmuxPaneLine(line)
 	if err != nil {
 		t.Fatalf("parseTmuxPaneLine: %v", err)
@@ -494,37 +494,47 @@ func TestParseTmuxPaneLine_WithCommand(t *testing.T) {
 	if pane.CurrentCommand != "zsh" {
 		t.Errorf("CurrentCommand = %q, want %q", pane.CurrentCommand, "zsh")
 	}
+	if pane.PanePID != "12345" {
+		t.Errorf("PanePID = %q, want %q", pane.PanePID, "12345")
+	}
 }
 
 func TestParseTmuxPaneLine_TooFewFields(t *testing.T) {
-	line := "main\t0\tdev\t%12\tclaude-code\t/home/user"
+	line := "main\t0\tdev\t%12\tclaude-code\t/home/user\tzsh"
 	_, err := parseTmuxPaneLine(line)
 	if err == nil {
-		t.Error("expected error for 6-field line, got nil")
+		t.Error("expected error for 7-field line, got nil")
 	}
 }
 
 func TestReconcileSingleState(t *testing.T) {
 	tests := []struct {
-		name           string
-		state          string
-		currentCommand string
-		wantChanged    bool
-		wantState      string
+		name             string
+		state            string
+		currentCommand   string
+		shellHasChildren bool
+		wantChanged      bool
+		wantState        string
 	}{
-		{"running+zsh -> done", StateRunning, "zsh", true, StateDone},
-		{"waiting_input+bash -> done", StateWaitingInput, "bash", true, StateDone},
-		{"approval_waiting+fish -> done", StateApprovalWaiting, "fish", true, StateDone},
-		{"done+zsh -> no change", StateDone, "zsh", false, StateDone},
-		{"running+node -> no change", StateRunning, "node", false, StateRunning},
-		{"running+claude -> no change", StateRunning, "claude", false, StateRunning},
-		{"waiting_input+node -> no change", StateWaitingInput, "node", false, StateWaitingInput},
+		// Shell with no children = truly exited
+		{"running+zsh+no_children -> done", StateRunning, "zsh", false, true, StateDone},
+		{"waiting_input+bash+no_children -> done", StateWaitingInput, "bash", false, true, StateDone},
+		{"approval_waiting+fish+no_children -> done", StateApprovalWaiting, "fish", false, true, StateDone},
+		// Shell with children = Claude Code is running a Bash tool (false positive prevention)
+		{"running+bash+has_children -> no change", StateRunning, "bash", true, false, StateRunning},
+		{"waiting_input+zsh+has_children -> no change", StateWaitingInput, "zsh", true, false, StateWaitingInput},
+		// Already done
+		{"done+zsh+no_children -> no change", StateDone, "zsh", false, false, StateDone},
+		// Non-shell command
+		{"running+node -> no change", StateRunning, "node", false, false, StateRunning},
+		{"running+claude -> no change", StateRunning, "claude", false, false, StateRunning},
+		{"waiting_input+node -> no change", StateWaitingInput, "node", false, false, StateWaitingInput},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ps := &PaneState{State: tt.state}
-			changed := reconcileSingleState(ps, tt.currentCommand)
+			changed := reconcileSingleState(ps, tt.currentCommand, tt.shellHasChildren)
 			if changed != tt.wantChanged {
 				t.Errorf("changed = %v, want %v", changed, tt.wantChanged)
 			}

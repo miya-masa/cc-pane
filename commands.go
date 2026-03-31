@@ -95,7 +95,8 @@ func cmdShow(args []string) error {
 	ps := findStateByPaneID(*paneID)
 	if ps != nil {
 		if pane, err := getPaneByID(*paneID); err == nil {
-			if reconcileSingleState(ps, pane.CurrentCommand) {
+			parentPIDs := pidsWithChildren()
+			if reconcileSingleState(ps, pane.CurrentCommand, parentPIDs[pane.PanePID]) {
 				if wErr := writeState(ps); wErr != nil {
 					fmt.Fprintf(os.Stderr, "warning: failed to update state for %s: %v\n", ps.PaneID, wErr)
 				}
