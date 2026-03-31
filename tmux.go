@@ -122,8 +122,9 @@ func getGitBranch(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// notifyApproval sends an OSC 9 notification to the pane's terminal.
-// This works through SSH with iTerm2/WezTerm when tmux allow-passthrough is enabled.
+// notifyApproval sends an OSC 9 notification to the pane's terminal via tmux
+// DCS passthrough. This works through SSH with terminal emulators that support
+// OSC 9 (iTerm2, WezTerm, Ghostty, etc.) when tmux allow-passthrough is enabled.
 // Failures are silently ignored (best-effort notification).
 func notifyApproval(pane *TmuxPane) {
 	if pane.Tty == "" {
@@ -134,8 +135,8 @@ func notifyApproval(pane *TmuxPane) {
 		return
 	}
 	defer f.Close()
-	// OSC 9 is the iTerm2/Growl notification escape sequence
-	_, _ = f.Write([]byte("\033]9;🔴 cc-pane: approval needed\a"))
+	// DCS passthrough wraps OSC 9 so tmux forwards it to the terminal
+	_, _ = f.Write([]byte("\033Ptmux;\033\033]9;🔴 cc-pane: approval needed\a\033\\"))
 }
 
 // commandVersion returns the version string of a command.
