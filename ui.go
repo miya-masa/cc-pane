@@ -143,12 +143,17 @@ func renderTable(states []*PaneState, useColor bool) {
 }
 
 // renderTSV outputs states as tab-separated values for piping to other tools.
-// Format: pane_id\tstate\tsession\twindow_index\tcwd\tupdated\tpreview
+// First field is pane_id (for extraction), remaining fields are padded for display.
 func renderTSV(states []*PaneState) {
 	for _, ps := range states {
-		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			ps.PaneID, ps.State, ps.Session, ps.WindowIndex,
-			ps.Cwd, formatRelativeTime(ps.LastUpdatedAt), ps.Preview)
+		icon := stateIcon(ps.State)
+		cwd := shortenPath(ps.Cwd, 40)
+		updated := formatRelativeTime(ps.LastUpdatedAt)
+		session := truncate(ps.Session, 22)
+		preview := truncate(ps.Preview, 40)
+
+		fmt.Fprintf(os.Stdout, "%s\t%s %-16s\t%-22s\t%-5s\t%-42s\t%-10s\t%s\n",
+			ps.PaneID, icon, ps.State, session, ps.WindowIndex, cwd, updated, preview)
 	}
 }
 

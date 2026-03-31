@@ -104,8 +104,8 @@ func TestRenderTSV(t *testing.T) {
 	if fields[0] != "%1" {
 		t.Errorf("field[0] = %q, want %%1", fields[0])
 	}
-	if fields[1] != StateRunning {
-		t.Errorf("field[1] = %q, want %q", fields[1], StateRunning)
+	if !strings.Contains(fields[1], StateRunning) {
+		t.Errorf("field[1] = %q, should contain %q", fields[1], StateRunning)
 	}
 }
 

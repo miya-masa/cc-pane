@@ -313,7 +313,7 @@ var requiredHookEvents = []string{
 	"SessionEnd",
 }
 
-const tmuxKeybinding = `bind L display-popup -w 90% -h 50% -E "cc-pane ls --tsv | fzf --delimiter '\t' --with-nth 2.. --preview 'cc-pane show --pane {1}' --preview-window down:60%:wrap | cut -f1 | xargs -r cc-pane jump --pane"`
+const tmuxKeybinding = `bind L display-popup -w 90% -h 50% -E "cc-pane ls --tsv | fzf --no-tmux --delimiter '\t' --with-nth 2.. --preview 'cc-pane show --pane {1}' --preview-window down:60%:wrap:follow | cut -f1 | xargs -r cc-pane jump --pane"`
 
 func claudeSettingsPath() string {
 	home, _ := os.UserHomeDir()
