@@ -529,32 +529,20 @@ func setupShellFunctions(dryRun bool) (bool, error) {
 		fmt.Println("  ✓ Shell functions already up to date")
 	}
 
-	// 2. Add source line to shell rc
+	// 2. Check shell rc source line
+	rcConfigured := false
 	for _, rcPath := range shellRcPaths() {
 		data, err := os.ReadFile(rcPath)
 		if err != nil {
-			continue // rc file doesn't exist, skip
+			continue
 		}
 		if strings.Contains(string(data), ccPaneMarker) {
-			fmt.Printf("  ✓ Source line already in %s\n", rcPath)
-			continue
+			rcConfigured = true
+			break
 		}
-		if dryRun {
-			fmt.Printf("  ~ Would add source line to %s\n", rcPath)
-			changed = true
-			continue
-		}
-		f, err := os.OpenFile(rcPath, os.O_APPEND|os.O_WRONLY, 0o644)
-		if err != nil {
-			return false, fmt.Errorf("open %s: %w", rcPath, err)
-		}
-		_, wErr := fmt.Fprintf(f, "\n%s\n", shellRcSourceLine)
-		f.Close()
-		if wErr != nil {
-			return false, fmt.Errorf("write %s: %w", rcPath, wErr)
-		}
-		fmt.Printf("  ✓ Added source line to %s\n", rcPath)
-		changed = true
+	}
+	if !rcConfigured {
+		fmt.Printf("\n    Add to your shell rc:\n      %s\n", shellRcSourceLine)
 	}
 
 	return changed, nil
@@ -672,6 +660,17 @@ func cmdUninstall(args []string) error {
 		}
 	}
 
+	// Check if source line remains in shell rc
+	for _, rcPath := range shellRcPaths() {
+		data, err := os.ReadFile(rcPath)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), ccPaneMarker) {
+			fmt.Printf("\n    Remove from %s:\n      %s\n", rcPath, shellRcSourceLine)
+		}
+	}
+
 	fmt.Println("\nUninstall complete.")
 	return nil
 }
@@ -752,31 +751,6 @@ func uninstallClaudeHooks() error {
 }
 
 func uninstallShellFunctions() error {
-	// 1. Remove source lines from shell rc files
-	for _, rcPath := range shellRcPaths() {
-		data, err := os.ReadFile(rcPath)
-		if err != nil {
-			continue
-		}
-		lines := strings.Split(string(data), "\n")
-		var filtered []string
-		removed := false
-		for _, line := range lines {
-			if strings.Contains(line, ccPaneMarker) {
-				removed = true
-				continue
-			}
-			filtered = append(filtered, line)
-		}
-		if removed {
-			if err := os.WriteFile(rcPath, []byte(strings.Join(filtered, "\n")), 0o644); err != nil {
-				return fmt.Errorf("write %s: %w", rcPath, err)
-			}
-			fmt.Printf("  ✓ Removed source line from %s\n", rcPath)
-		}
-	}
-
-	// 2. Remove functions file
 	path := shellFunctionsPath()
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
