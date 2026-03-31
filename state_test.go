@@ -279,6 +279,12 @@ func TestDetermineState(t *testing.T) {
 			expected: StateDone,
 		},
 		{
+			name:     "SessionEnd -> done",
+			event:    "SessionEnd",
+			data:     nil,
+			expected: StateDone,
+		},
+		{
 			name:     "Notification permission_prompt -> approval_waiting",
 			event:    "Notification",
 			data:     map[string]any{"type": "permission_prompt"},

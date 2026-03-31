@@ -337,6 +337,7 @@ var requiredHookEvents = []string{
 	"PermissionRequest",
 	"Notification",
 	"Stop",
+	"SessionEnd",
 }
 
 const tmuxKeybinding = `bind L display-popup -w 90% -h 50% -E "cc-pane pick"`

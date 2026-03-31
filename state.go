@@ -209,6 +209,8 @@ func determineState(event string, data map[string]any) string {
 		return StateApprovalWaiting
 	case "Stop":
 		return StateDone
+	case "SessionEnd":
+		return StateDone
 	case "Notification":
 		// Check notification type field (matches hook matcher values)
 		if t, ok := data["type"].(string); ok {
@@ -326,6 +328,8 @@ func buildPreview(event string, data map[string]any) string {
 			}
 		}
 		return "waiting for input"
+	case "SessionEnd":
+		return "session ended"
 	case "Notification":
 		if msg, ok := data["message"].(string); ok && msg != "" {
 			msg = strings.ReplaceAll(msg, "\n", " ")
