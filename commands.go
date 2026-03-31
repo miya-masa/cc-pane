@@ -77,6 +77,49 @@ func cmdJump(args []string) error {
 	return jumpToPaneByID(*paneID)
 }
 
+func cmdShow(args []string) error {
+	fs := flag.NewFlagSet("show", flag.ContinueOnError)
+	paneID := fs.String("pane", "", "pane ID to show (e.g., %12)")
+	lines := fs.Int("lines", 15, "number of pane output lines to capture")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *paneID == "" {
+		return fmt.Errorf("--pane is required (e.g., --pane %%12)")
+	}
+
+	// State info
+	ps := findStateByPaneID(*paneID)
+	if ps != nil {
+		fmt.Println("--- State ---")
+		fmt.Printf("state:   %s %s\n", stateIcon(ps.State), ps.State)
+		fmt.Printf("session: %s:%s\n", ps.Session, ps.WindowIndex)
+		fmt.Printf("pane:    %s\n", ps.PaneID)
+		if ps.Cwd != "" {
+			fmt.Printf("cwd:     %s\n", shortenPath(ps.Cwd, 60))
+		}
+		if ps.Branch != "" {
+			fmt.Printf("branch:  %s\n", ps.Branch)
+		}
+		fmt.Printf("updated: %s\n", formatRelativeTime(ps.LastUpdatedAt))
+		if ps.Preview != "" {
+			fmt.Printf("preview: %s\n", ps.Preview)
+		}
+		fmt.Println()
+	}
+
+	// Pane output
+	content, err := getPaneContent(*paneID, *lines)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "(could not capture pane: %v)\n", err)
+		return nil
+	}
+	fmt.Println("--- Pane Output ---")
+	fmt.Println(content)
+	return nil
+}
+
 func jumpToPaneByID(paneID string) error {
 	pane, err := getPaneByID(paneID)
 	if err != nil {
@@ -222,6 +265,13 @@ func cmdUpdateState(args []string) error {
 	newState := determineState(*event, data)
 	if newState == "" {
 		return nil // no state change (e.g., unrecognized Notification)
+	}
+
+	// For Stop events, check pane content to distinguish done vs waiting_input
+	if *event == "Stop" && newState == StateDone {
+		if content, err := getPaneContent(pane.PaneID, 3); err == nil && looksLikeQuestion(content) {
+			newState = StateWaitingInput
+		}
 	}
 
 	// Build preview from event data

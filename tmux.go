@@ -98,6 +98,16 @@ func jumpToPane(session, windowIndex, paneID string) error {
 	return nil
 }
 
+// getPaneContent captures the last N lines of output from a tmux pane.
+func getPaneContent(paneID string, lines int) (string, error) {
+	start := fmt.Sprintf("-%d", lines)
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", paneID, "-S", start).Output()
+	if err != nil {
+		return "", fmt.Errorf("capture-pane %s: %w", paneID, err)
+	}
+	return strings.TrimRight(string(out), "\n"), nil
+}
+
 // getGitBranch returns the current git branch for a directory.
 func getGitBranch(dir string) string {
 	if dir == "" {

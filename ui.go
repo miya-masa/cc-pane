@@ -109,23 +109,25 @@ func renderTable(states []*PaneState, useColor bool) {
 		return
 	}
 
-	header := fmt.Sprintf("%-3s %-18s %-14s %-5s %-6s %-20s %-30s %s",
-		"", "STATE", "SESSION", "WIN", "PANE", "TITLE", "CWD", "UPDATED")
+	// Emoji icons are 2 display columns but 4 bytes — avoid %-Ns formatting for them.
+	// Use manual padding: icon + space, then fixed-width ASCII columns.
+	header := fmt.Sprintf("   %-18s %-22s %-5s %-6s %-40s %s",
+		"STATE", "SESSION", "WIN", "PANE", "CWD", "UPDATED")
 	if useColor {
 		fmt.Printf("%s%s%s\n", colorBold, header, colorReset)
 	} else {
 		fmt.Println(header)
 	}
-	fmt.Println(strings.Repeat("─", 110))
+	fmt.Println(strings.Repeat("─", 100))
 
 	for _, ps := range states {
 		icon := stateIcon(ps.State)
-		cwd := shortenPath(ps.Cwd, 28)
-		title := truncate(ps.PaneTitle, 18)
+		cwd := shortenPath(ps.Cwd, 38)
 		updated := formatRelativeTime(ps.LastUpdatedAt)
+		session := truncate(ps.Session, 20)
 
-		line := fmt.Sprintf("%-3s %-18s %-14s %-5s %-6s %-20s %-30s %s",
-			icon, ps.State, ps.Session, ps.WindowIndex, ps.PaneID, title, cwd, updated)
+		line := fmt.Sprintf("%s %-18s %-22s %-5s %-6s %-40s %s",
+			icon, ps.State, session, ps.WindowIndex, ps.PaneID, cwd, updated)
 
 		if useColor {
 			c := stateColor(ps.State)

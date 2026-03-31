@@ -208,7 +208,7 @@ func determineState(event string, data map[string]any) string {
 	case "PermissionRequest":
 		return StateApprovalWaiting
 	case "Stop":
-		return StateWaitingInput
+		return StateDone
 	case "Notification":
 		// Check notification type field (matches hook matcher values)
 		if t, ok := data["type"].(string); ok {
@@ -223,6 +223,18 @@ func determineState(event string, data map[string]any) string {
 	default:
 		return StateUnknown
 	}
+}
+
+// looksLikeQuestion checks if pane content ends with a question.
+// Used to distinguish "waiting for user answer" from "task completed".
+func looksLikeQuestion(content string) bool {
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimRight(line, " \t")
+		if trimmed != "" && strings.HasSuffix(trimmed, "?") {
+			return true
+		}
+	}
+	return false
 }
 
 // previewMaxLen is the maximum length of preview text before truncation.

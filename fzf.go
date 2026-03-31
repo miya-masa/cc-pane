@@ -18,22 +18,22 @@ func runFzfPicker(states []*PaneState) (string, error) {
 	var lines []string
 	for _, ps := range states {
 		icon := stateIcon(ps.State)
-		cwd := shortenPath(ps.Cwd, 28)
-		title := truncate(ps.PaneTitle, 18)
+		cwd := shortenPath(ps.Cwd, 38)
 		updated := formatRelativeTime(ps.LastUpdatedAt)
+		session := truncate(ps.Session, 20)
 		preview := truncate(ps.Preview, 40)
 
 		// First field (before tab) is the pane_id for extraction; rest is display
-		line := fmt.Sprintf("%s\t%s %-18s %-14s %s:%-5s %-20s %-28s %-10s %s",
-			ps.PaneID, icon, ps.State, ps.Session,
-			ps.WindowIndex, ps.PaneID, title, cwd, updated, preview)
+		line := fmt.Sprintf("%s\t%s %-18s %-22s %-5s %-6s %-40s %-10s %s",
+			ps.PaneID, icon, ps.State, session,
+			ps.WindowIndex, ps.PaneID, cwd, updated, preview)
 		lines = append(lines, line)
 	}
 
 	input := strings.Join(lines, "\n")
 
-	header := fmt.Sprintf("  %-18s %-14s %-8s %-20s %-28s %-10s %s",
-		"STATE", "SESSION", "WIN:PANE", "TITLE", "CWD", "UPDATED", "PREVIEW")
+	header := fmt.Sprintf("   %-18s %-22s %-5s %-6s %-40s %-10s %s",
+		"STATE", "SESSION", "WIN", "PANE", "CWD", "UPDATED", "PREVIEW")
 
 	cmd := exec.Command("fzf",
 		"--ansi",
@@ -43,8 +43,9 @@ func runFzfPicker(states []*PaneState) (string, error) {
 		"--header", header,
 		"--prompt", "cc-pane > ",
 		"--reverse",
-		"--height", "40%",
-		"--min-height", "10",
+		"--preview", "cc-pane show --pane {1}",
+		"--preview-window", "down:60%:wrap:follow",
+		"--height", "100%",
 	)
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Stderr = os.Stderr

@@ -19,6 +19,8 @@ func main() {
 		err = cmdLs(os.Args[2:])
 	case "pick":
 		err = cmdPick(os.Args[2:])
+	case "show":
+		err = cmdShow(os.Args[2:])
 	case "jump":
 		err = cmdJump(os.Args[2:])
 	case "refresh":
@@ -52,6 +54,7 @@ Usage:
 Commands:
   ls             List all Claude Code sessions
   pick           Select a session with fzf and jump to it
+  show           Show state and pane output for a specific pane
   jump           Jump to a specific pane
   refresh        Clean up stale state files
   doctor         Check dependencies and configuration

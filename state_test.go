@@ -273,10 +273,10 @@ func TestDetermineState(t *testing.T) {
 			expected: StateApprovalWaiting,
 		},
 		{
-			name:     "Stop -> waiting_input",
+			name:     "Stop -> done",
 			event:    "Stop",
 			data:     nil,
-			expected: StateWaitingInput,
+			expected: StateDone,
 		},
 		{
 			name:     "Notification permission_prompt -> approval_waiting",
@@ -309,6 +309,31 @@ func TestDetermineState(t *testing.T) {
 			got := determineState(tt.event, tt.data)
 			if got != tt.expected {
 				t.Errorf("determineState(%q, %v) = %q, want %q", tt.event, tt.data, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestLooksLikeQuestion(t *testing.T) {
+	tests := []struct {
+		name     string
+		content  string
+		expected bool
+	}{
+		{"question mark at end", "Would you like to proceed?", true},
+		{"question in multiline", "Here is the result.\nShould I continue?", true},
+		{"question with trailing spaces", "Is this ok?   ", true},
+		{"no question", "Done! All tests pass.", false},
+		{"empty content", "", false},
+		{"question mark in middle", "file?.go is found", false},
+		{"just whitespace lines", "  \n\t\n  ", false},
+		{"mixed lines with question", "Running tests...\nAll passed.\nAnything else you need?", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := looksLikeQuestion(tt.content); got != tt.expected {
+				t.Errorf("looksLikeQuestion(%q) = %v, want %v", tt.content, got, tt.expected)
 			}
 		})
 	}
