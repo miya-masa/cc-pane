@@ -9,7 +9,11 @@ When running Claude Code in multiple tmux panes simultaneously, it's hard to tel
 ## Features
 
 - **Lightweight**: No daemon process. State files are updated only when hooks fire.
-- **Priority sorting**: `approval_waiting` > `waiting_input` > `running` — urgent items surface first.
+- **Smart sorting**: `approval_waiting` > recent `waiting_input` > `running` > stale `waiting_input` — urgent items surface first, idle sessions sink to the bottom.
+- **Background agent tracking**: Sessions with background agents stay `running` instead of falsely showing `waiting_input`.
+- **Live dashboard**: `cc-pane watch` for real-time session monitoring.
+- **tmux status bar**: `cc-pane status` shows a compact summary (🔴1 🟢3 🟡2) in your status line.
+- **Approval notifications**: OSC 9 alert when a session needs your approval (works through SSH with iTerm2/WezTerm).
 - **Pipe-friendly**: `cc-pane ls --tsv` outputs tab-separated values for use with fzf, grep, awk, etc.
 - **Single Go binary**: Zero external library dependencies. Only requires tmux.
 - **JSON output**: `cc-pane ls --json` for scripting and automation.
@@ -50,7 +54,10 @@ This automatically:
 
 1. Adds cc-pane hooks to `~/.claude/settings.json` (existing hooks are preserved)
 2. Writes shell functions (`cc-pick`, `cc-rm`) to `~/.config/cc-pane/functions.sh`
-3. Adds tmux keybindings (`prefix+L`: pick, `prefix+R`: rm) to `~/.tmux.conf`
+3. Adds tmux keybindings and settings to `~/.tmux.conf`:
+   - `prefix+L`: pick session, `prefix+R`: remove state entries
+   - Appends `#(cc-pane status)` to `status-right` (existing value is preserved)
+   - Sets `status-interval 5` and `allow-passthrough on`
 
 Then add the following to your `.zshrc` or `.bashrc`:
 
@@ -92,8 +99,26 @@ Example output:
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 🔴 approval_waiting   work                   1     %5     ~/project                                3s ago
 🟡 waiting_input      main                   0     %12    ~/src/api                                1m ago
-🟢 running            main                   2     %8     ~/src/frontend                           5s ago
+🟢 running (+2 bg)    main                   2     %8     ~/src/frontend                           5s ago
+⚪ waiting_input      dev                    0     %3     ~/old-project                            25m ago
 ```
+
+### Status Bar Summary
+
+```bash
+cc-pane status
+```
+
+Outputs a compact string like `🔴1 🟡2 🟢3 ⚪1` for embedding in tmux `status-right`. Sessions with zero count are omitted. Returns empty string when no sessions exist.
+
+### Live Dashboard
+
+```bash
+cc-pane watch               # refresh every 2 seconds
+cc-pane watch --interval 5s # custom interval
+```
+
+Live-updating display of all sessions. Shows a header with timestamp and status summary. Press `Ctrl+C` to exit.
 
 ### TSV Output (for piping)
 
@@ -152,25 +177,48 @@ cc-pane ls --tsv | cut -f2 | sort | uniq -c
 
 ## State Transitions
 
-| Hook Event                         | State              | Description                              |
-| ---------------------------------- | ------------------ | ---------------------------------------- |
-| SessionStart                       | `waiting_input`    | Session started, waiting for first input |
-| UserPromptSubmit                   | `running`          | User submitted a prompt                  |
-| PreToolUse                         | `running`          | Tool is about to execute                 |
-| PostToolUse                        | `running`          | Tool completed                           |
-| PermissionRequest                  | `approval_waiting` | Waiting for user to approve a tool       |
-| Stop                               | `waiting_input`    | Claude stopped, waiting for next input   |
-| SessionEnd                         | *(file removed)*   | Session ended, state file deleted        |
-| Notification (`permission_prompt`) | `approval_waiting` | Permission prompt notification           |
-| Notification (`idle_prompt`)       | `waiting_input`    | Idle prompt notification                 |
+| Hook Event                         | State              | Description                                   |
+| ---------------------------------- | ------------------ | --------------------------------------------- |
+| SessionStart                       | `waiting_input`    | Session started, waiting for first input      |
+| UserPromptSubmit                   | `running`          | User submitted a prompt                       |
+| PreToolUse                         | `running`          | Tool is about to execute                      |
+| PostToolUse                        | `running`          | Tool completed                                |
+| PostToolUse (ExitPlanMode)         | `approval_waiting` | Plan mode waiting for user approval           |
+| PostToolUse (Agent, bg)            | `running`          | Background agent launched, counter incremented |
+| PermissionRequest                  | `approval_waiting` | Waiting for user to approve a tool            |
+| Stop                               | `waiting_input`    | Claude stopped, waiting for next input        |
+| Stop (bg agents pending)           | `running`          | Background agents still working               |
+| SessionEnd                         | *(file removed)*   | Session ended, state file deleted             |
+| Notification (`permission_prompt`) | `approval_waiting` | Permission prompt notification                |
+| Notification (`idle_prompt`)       | `waiting_input`    | Idle prompt notification                      |
 
-## State Priority
+## Display Priority
 
 Display order in listings (highest priority first):
 
-1. `approval_waiting` 🔴 — Needs immediate user action
-2. `waiting_input` 🟡 — Waiting for user input
-3. `running` 🟢 — Actively working
+1. 🔴 `approval_waiting` — Needs immediate user action
+2. 🟡 `waiting_input` (< 10 min) — Recently active, waiting for input
+3. 🟢 `running` — Actively working (including background agents)
+4. ⚪ `waiting_input` (> 10 min) — Stale session, dimmed display
+
+## Background Agent Tracking
+
+When Claude Code dispatches background agents (`Agent` tool with `run_in_background: true`), cc-pane tracks a counter in the state file:
+
+- **Launch**: PostToolUse with `tool_name: "Agent"` and `tool_input.run_in_background: true` increments the counter
+- **Completion**: Non-permission/idle Notification decrements the counter
+- **Reset**: `UserPromptSubmit` resets the counter (new user turn)
+- **Safety**: Counter is auto-reset after 30 minutes of no updates
+
+While background agents are pending, `Stop` events keep the state as `running` instead of transitioning to `waiting_input`.
+
+## Approval Notification
+
+When a session transitions to `approval_waiting`, cc-pane sends an OSC 9 notification to the pane's terminal. This works through SSH with terminal emulators that support OSC 9 (iTerm2, WezTerm, etc.).
+
+Requirements:
+- tmux `allow-passthrough` must be enabled (`cc-pane setup` configures this)
+- Terminal emulator must support OSC 9 notifications
 
 ## State Files
 

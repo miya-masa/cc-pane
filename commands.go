@@ -445,7 +445,7 @@ cc-rm() {
 const tmuxKeybindings = `##### cc-pane #####
 bind L display-popup -w 90% -h 50% -E ". ~/.config/cc-pane/functions.sh && cc-pick"
 bind R display-popup -w 90% -h 50% -E ". ~/.config/cc-pane/functions.sh && cc-rm"
-set -ag status-right ' #(cc-pane status)'
+set -ag status-right " #(cc-pane status)"
 set -g status-interval 5
 set -g allow-passthrough on`
 
