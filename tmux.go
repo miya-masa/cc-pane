@@ -15,9 +15,10 @@ type TmuxPane struct {
 	PaneID      string
 	PaneTitle   string
 	Cwd         string
+	Tty         string
 }
 
-const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}"
+const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}\t#{pane_tty}"
 
 // getCurrentPane returns info about the pane identified by $TMUX_PANE.
 func getCurrentPane() (*TmuxPane, error) {
@@ -47,8 +48,8 @@ func getPaneByID(paneID string) (*TmuxPane, error) {
 }
 
 func parseTmuxPaneLine(line string) (*TmuxPane, error) {
-	parts := strings.SplitN(line, "\t", 6)
-	if len(parts) < 6 {
+	parts := strings.SplitN(line, "\t", 7)
+	if len(parts) < 7 {
 		return nil, fmt.Errorf("unexpected tmux output format: %q", line)
 	}
 	return &TmuxPane{
@@ -58,6 +59,7 @@ func parseTmuxPaneLine(line string) (*TmuxPane, error) {
 		PaneID:      parts[3],
 		PaneTitle:   parts[4],
 		Cwd:         parts[5],
+		Tty:         parts[6],
 	}, nil
 }
 
@@ -120,25 +122,20 @@ func getGitBranch(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// getPaneTTY returns the tty device path for a tmux pane.
-func getPaneTTY(paneID string) string {
-	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_tty}").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
 // notifyApproval sends an OSC 9 notification to the pane's terminal.
 // This works through SSH with iTerm2/WezTerm when tmux allow-passthrough is enabled.
 // Failures are silently ignored (best-effort notification).
 func notifyApproval(pane *TmuxPane) {
-	tty := getPaneTTY(pane.PaneID)
-	if tty == "" {
+	if pane.Tty == "" {
 		return
 	}
+	f, err := os.OpenFile(pane.Tty, os.O_WRONLY, 0)
+	if err != nil {
+		return
+	}
+	defer f.Close()
 	// OSC 9 is the iTerm2/Growl notification escape sequence
-	_ = os.WriteFile(tty, []byte("\033]9;🔴 cc-pane: approval needed\a"), 0o200)
+	_, _ = f.Write([]byte("\033]9;🔴 cc-pane: approval needed\a"))
 }
 
 // commandVersion returns the version string of a command.

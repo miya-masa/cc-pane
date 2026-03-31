@@ -28,7 +28,7 @@ func cmdStatus() error {
 	if err != nil {
 		return err
 	}
-	states = cleanupDeadPanes(states, nil)
+	// No cleanupDeadPanes here — status is read-only and called every few seconds by tmux.
 	s := formatStatus(states)
 	if s != "" {
 		fmt.Print(s)
@@ -47,7 +47,16 @@ func cmdWatch(args []string) error {
 	defer stop()
 
 	useColor := isColorTerminal()
+	timer := time.NewTimer(0) // fire immediately for first render
+	defer timer.Stop()
+
 	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-timer.C:
+		}
+
 		// Clear screen and move cursor to top-left
 		fmt.Print("\033[H\033[2J")
 
@@ -68,11 +77,7 @@ func cmdWatch(args []string) error {
 
 		renderTable(states, useColor)
 
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(*interval):
-		}
+		timer.Reset(*interval)
 	}
 }
 
@@ -440,7 +445,7 @@ cc-rm() {
 const tmuxKeybindings = `##### cc-pane #####
 bind L display-popup -w 90% -h 50% -E ". ~/.config/cc-pane/functions.sh && cc-pick"
 bind R display-popup -w 90% -h 50% -E ". ~/.config/cc-pane/functions.sh && cc-rm"
-set -g status-right '#(cc-pane status) | %H:%M'
+set -ag status-right ' #(cc-pane status)'
 set -g status-interval 5
 set -g allow-passthrough on`
 

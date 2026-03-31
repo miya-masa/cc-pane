@@ -611,7 +611,7 @@ func TestWriteState_JSONRoundtrip(t *testing.T) {
 }
 
 func TestParseTmuxPaneLine(t *testing.T) {
-	line := "main\t0\tdev\t%12\tclaude-code\t/home/user/project"
+	line := "main\t0\tdev\t%12\tclaude-code\t/home/user/project\t/dev/pts/5"
 	pane, err := parseTmuxPaneLine(line)
 	if err != nil {
 		t.Fatalf("parseTmuxPaneLine: %v", err)
@@ -626,12 +626,15 @@ func TestParseTmuxPaneLine(t *testing.T) {
 	if pane.Cwd != "/home/user/project" {
 		t.Errorf("Cwd = %q, want %q", pane.Cwd, "/home/user/project")
 	}
+	if pane.Tty != "/dev/pts/5" {
+		t.Errorf("Tty = %q, want %q", pane.Tty, "/dev/pts/5")
+	}
 }
 
 func TestParseTmuxPaneLine_TooFewFields(t *testing.T) {
-	line := "main\t0\tdev\t%12\tclaude-code"
+	line := "main\t0\tdev\t%12\tclaude-code\t/home/user/project"
 	_, err := parseTmuxPaneLine(line)
 	if err == nil {
-		t.Error("expected error for 5-field line, got nil")
+		t.Error("expected error for 6-field line, got nil")
 	}
 }
