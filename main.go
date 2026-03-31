@@ -63,7 +63,7 @@ Commands:
   pick           Select a session with fzf and jump to it
   show           Show state and pane output for a specific pane
   jump           Jump to a specific pane
-  rm             Remove state entries (--pane %ID or --done)
+  rm             Remove a state entry (fzf picker or --pane %ID)
   refresh        Clean up stale state files
   doctor         Check dependencies and configuration
   uninstall      Remove cc-pane hooks and tmux keybinding

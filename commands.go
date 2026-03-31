@@ -133,40 +133,40 @@ func jumpToPaneByID(paneID string) error {
 func cmdRm(args []string) error {
 	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
 	paneID := fs.String("pane", "", "pane ID to remove (e.g., %12)")
-	done := fs.Bool("done", false, "remove all done entries")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	if *paneID == "" && !*done {
-		return fmt.Errorf("--pane or --done is required")
+	// Direct removal by pane ID
+	if *paneID != "" {
+		return removeStateByPaneID(*paneID)
 	}
 
+	// Interactive selection via fzf
 	states, err := listStates()
 	if err != nil {
 		return err
 	}
 
-	removed := 0
-	for _, ps := range states {
-		match := false
-		if *paneID != "" && ps.PaneID == *paneID {
-			match = true
-		}
-		if *done && ps.State == StateDone {
-			match = true
-		}
-		if match {
-			path := stateFilePath(ps.Session, ps.WindowIndex, ps.PaneID)
-			os.Remove(path)
-			fmt.Printf("Removed %s (%s:%s %s)\n", ps.PaneID, ps.Session, ps.WindowIndex, ps.State)
-			removed++
-		}
+	pane, err := runFzfPicker(states)
+	if err != nil {
+		return err
+	}
+	if pane == "" {
+		return nil // cancelled
 	}
 
-	if removed == 0 {
-		fmt.Println("No matching entries found")
+	return removeStateByPaneID(pane)
+}
+
+func removeStateByPaneID(paneID string) error {
+	ps := findStateByPaneID(paneID)
+	if ps == nil {
+		return fmt.Errorf("no state found for pane %s", paneID)
 	}
+	path := stateFilePath(ps.Session, ps.WindowIndex, ps.PaneID)
+	os.Remove(path)
+	fmt.Printf("Removed %s (%s:%s %s)\n", ps.PaneID, ps.Session, ps.WindowIndex, ps.State)
 	return nil
 }
 
