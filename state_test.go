@@ -243,6 +243,12 @@ func TestDetermineState(t *testing.T) {
 		expected string
 	}{
 		{
+			name:     "SessionStart -> running",
+			event:    "SessionStart",
+			data:     nil,
+			expected: StateRunning,
+		},
+		{
 			name:     "UserPromptSubmit -> running",
 			event:    "UserPromptSubmit",
 			data:     nil,
@@ -279,10 +285,10 @@ func TestDetermineState(t *testing.T) {
 			expected: StateDone,
 		},
 		{
-			name:     "SessionEnd -> done",
+			name:     "SessionEnd -> no state change (handled specially)",
 			event:    "SessionEnd",
 			data:     nil,
-			expected: StateDone,
+			expected: "",
 		},
 		{
 			name:     "Notification permission_prompt -> approval_waiting",

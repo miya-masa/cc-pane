@@ -251,6 +251,16 @@ func cmdUpdateState(args []string) error {
 		return fmt.Errorf("get pane info: %w", err)
 	}
 
+	// SessionEnd: remove state file and exit
+	if *event == "SessionEnd" {
+		existing := findStateByPaneID(pane.PaneID)
+		if existing != nil {
+			path := stateFilePath(existing.Session, existing.WindowIndex, existing.PaneID)
+			os.Remove(path)
+		}
+		return nil
+	}
+
 	// Determine new state from event
 	newState := determineState(*event, data)
 	if newState == "" {
@@ -305,6 +315,7 @@ const ccPaneMarker = "cc-pane"
 // requiredHookEvents lists all Claude Code hook events cc-pane needs.
 var requiredHookEvents = []string{
 	"UserPromptSubmit",
+	"SessionStart",
 	"PreToolUse",
 	"PostToolUse",
 	"PermissionRequest",

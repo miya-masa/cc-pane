@@ -11,6 +11,7 @@ func TestMergeHooks_CleansNullValues(t *testing.T) {
 		"hooks": map[string]any{
 			"SessionEnd":   nil,
 			"SessionStart": nil,
+			"SomeUnknown":  nil,
 			"Stop": []any{
 				map[string]any{
 					"hooks": []any{
@@ -28,13 +29,11 @@ func TestMergeHooks_CleansNullValues(t *testing.T) {
 
 	hooks := settings["hooks"].(map[string]any)
 
-	// SessionEnd null was cleaned, then re-added as a required hook
-	if val := hooks["SessionEnd"]; val == nil {
-		t.Error("SessionEnd should exist as a valid hook (was null, now re-added)")
-	}
-	// SessionStart null should be removed (not a required hook)
-	if _, exists := hooks["SessionStart"]; exists {
-		t.Error("SessionStart should have been removed")
+	// Null values were cleaned, then re-added as required hooks
+	for _, event := range []string{"SessionEnd", "SessionStart"} {
+		if val := hooks[event]; val == nil {
+			t.Errorf("%s should exist as a valid hook (was null, now re-added)", event)
+		}
 	}
 
 	// Existing valid entries should be preserved
@@ -47,7 +46,7 @@ func TestMergeHooks_CleansNullValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("json.Marshal: %v", err)
 	}
-	if s := string(out); strings.Contains(s, `"SessionStart":null`) {
+	if s := string(out); strings.Contains(s, `"SomeUnknown":null`) {
 		t.Errorf("JSON still contains null: %s", s)
 	}
 }
