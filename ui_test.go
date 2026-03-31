@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"io"
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestFormatRelativeTime(t *testing.T) {
 	// Valid timestamp should return something meaningful
@@ -75,6 +80,44 @@ func TestStateIcon(t *testing.T) {
 		}
 		icons[icon] = state
 	}
+}
+
+func TestRenderTSV(t *testing.T) {
+	states := []*PaneState{
+		{PaneID: "%1", State: StateRunning, Session: "main", WindowIndex: "0", Cwd: "/tmp", LastUpdatedAt: "2025-01-01T00:00:00Z", Preview: "tool: Bash"},
+		{PaneID: "%2", State: StateDone, Session: "dev", WindowIndex: "1", Cwd: "/home", LastUpdatedAt: "2025-01-01T00:00:00Z", Preview: "session ended"},
+	}
+
+	// Capture output by redirecting stdout
+	old := captureStdout(func() { renderTSV(states) })
+
+	lines := strings.Split(strings.TrimRight(old, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(lines), lines)
+	}
+
+	// First field should be pane_id
+	fields := strings.Split(lines[0], "\t")
+	if len(fields) != 7 {
+		t.Fatalf("expected 7 tab-separated fields, got %d: %v", len(fields), fields)
+	}
+	if fields[0] != "%1" {
+		t.Errorf("field[0] = %q, want %%1", fields[0])
+	}
+	if fields[1] != StateRunning {
+		t.Errorf("field[1] = %q, want %q", fields[1], StateRunning)
+	}
+}
+
+func captureStdout(fn func()) string {
+	r, w, _ := os.Pipe()
+	old := os.Stdout
+	os.Stdout = w
+	fn()
+	w.Close()
+	os.Stdout = old
+	out, _ := io.ReadAll(r)
+	return string(out)
 }
 
 func TestStateColor(t *testing.T) {

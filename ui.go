@@ -142,6 +142,16 @@ func renderTable(states []*PaneState, useColor bool) {
 	}
 }
 
+// renderTSV outputs states as tab-separated values for piping to other tools.
+// Format: pane_id\tstate\tsession\twindow_index\tcwd\tupdated\tpreview
+func renderTSV(states []*PaneState) {
+	for _, ps := range states {
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			ps.PaneID, ps.State, ps.Session, ps.WindowIndex,
+			ps.Cwd, formatRelativeTime(ps.LastUpdatedAt), ps.Preview)
+	}
+}
+
 // renderJSON outputs states as JSON to stdout.
 func renderJSON(states []*PaneState) error {
 	if states == nil {

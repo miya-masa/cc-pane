@@ -17,8 +17,6 @@ func main() {
 	switch os.Args[1] {
 	case "ls":
 		err = cmdLs(os.Args[2:])
-	case "pick":
-		err = cmdPick(os.Args[2:])
 	case "show":
 		err = cmdShow(os.Args[2:])
 	case "jump":
@@ -60,7 +58,6 @@ Usage:
 Commands:
   setup          Configure Claude Code hooks and tmux keybinding
   ls             List all Claude Code sessions
-  pick           Select a session with fzf and jump to it
   show           Show state and pane output for a specific pane
   jump           Jump to a specific pane
   rm             Remove a state entry (fzf picker or --pane %ID)

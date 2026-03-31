@@ -23,6 +23,7 @@ func hooksConfigured() bool {
 func cmdLs(args []string) error {
 	fs := flag.NewFlagSet("ls", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "output as JSON")
+	tsvOutput := fs.Bool("tsv", false, "output as TSV (for piping)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -36,34 +37,12 @@ func cmdLs(args []string) error {
 	if *jsonOutput {
 		return renderJSON(states)
 	}
+	if *tsvOutput {
+		renderTSV(states)
+		return nil
+	}
 	renderTable(states, isColorTerminal())
 	return nil
-}
-
-func cmdPick(_ []string) error {
-	states, err := listStates()
-	if err != nil {
-		return err
-	}
-	states = cleanupDeadPanes(states, nil)
-
-	paneID, err := runFzfPicker(states)
-	if err != nil {
-		return err
-	}
-	if paneID == "" {
-		return nil // user cancelled
-	}
-
-	// Find state for this pane to get session/window info
-	for _, ps := range states {
-		if ps.PaneID == paneID {
-			return jumpToPane(ps.Session, ps.WindowIndex, ps.PaneID)
-		}
-	}
-
-	// Fallback: query tmux directly
-	return jumpToPaneByID(paneID)
 }
 
 func cmdJump(args []string) error {
@@ -137,26 +116,11 @@ func cmdRm(args []string) error {
 		return err
 	}
 
-	// Direct removal by pane ID
-	if *paneID != "" {
-		return removeStateByPaneID(*paneID)
+	if *paneID == "" {
+		return fmt.Errorf("--pane is required (e.g., --pane %%12)")
 	}
 
-	// Interactive selection via fzf
-	states, err := listStates()
-	if err != nil {
-		return err
-	}
-
-	pane, err := runFzfPicker(states)
-	if err != nil {
-		return err
-	}
-	if pane == "" {
-		return nil // cancelled
-	}
-
-	return removeStateByPaneID(pane)
+	return removeStateByPaneID(*paneID)
 }
 
 func removeStateByPaneID(paneID string) error {
@@ -208,14 +172,6 @@ func cmdDoctor() error {
 
 	check("tmux", func() (string, bool) {
 		v, err := commandVersion("tmux", "-V")
-		if err != nil {
-			return "not found", false
-		}
-		return v, true
-	})
-
-	check("fzf", func() (string, bool) {
-		v, err := commandVersion("fzf", "--version")
 		if err != nil {
 			return "not found", false
 		}
@@ -365,7 +321,7 @@ var requiredHookEvents = []string{
 	"SessionEnd",
 }
 
-const tmuxKeybinding = `bind L display-popup -w 90% -h 50% -E "cc-pane pick"`
+const tmuxKeybinding = `bind L display-popup -w 90% -h 50% -E "cc-pane ls --tsv | fzf --delimiter '\t' --with-nth 2.. --preview 'cc-pane show --pane {1}' --preview-window down:60%:wrap | cut -f1 | xargs -r cc-pane jump --pane"`
 
 func claudeSettingsPath() string {
 	home, _ := os.UserHomeDir()
