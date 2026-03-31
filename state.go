@@ -20,16 +20,17 @@ const (
 
 // PaneState represents the tracked state of a Claude Code session in a tmux pane.
 type PaneState struct {
-	Session       string `json:"session"`
-	WindowIndex   string `json:"window_index"`
-	WindowName    string `json:"window_name"`
-	PaneID        string `json:"pane_id"`
-	PaneTitle     string `json:"pane_title"`
-	State         string `json:"state"`
-	LastUpdatedAt string `json:"last_updated_at"`
-	Cwd           string `json:"cwd,omitempty"`
-	Branch        string `json:"branch,omitempty"`
-	Preview       string `json:"preview,omitempty"`
+	Session          string `json:"session"`
+	WindowIndex      string `json:"window_index"`
+	WindowName       string `json:"window_name"`
+	PaneID           string `json:"pane_id"`
+	PaneTitle        string `json:"pane_title"`
+	State            string `json:"state"`
+	LastUpdatedAt    string `json:"last_updated_at"`
+	Cwd              string `json:"cwd,omitempty"`
+	Branch           string `json:"branch,omitempty"`
+	Preview          string `json:"preview,omitempty"`
+	BackgroundAgents int    `json:"background_agents,omitempty"`
 }
 
 // StatePriority returns display priority (lower = higher priority).
@@ -190,7 +191,10 @@ func cleanStaleStates(activePaneIDs map[string]bool) (int, error) {
 // and Notification types (permission_prompt, idle_prompt) for additional signals.
 // PreToolUse always maps to running since the actual permission check
 // is handled by PermissionRequest.
-func determineState(event string, data map[string]any) string {
+//
+// When existing is non-nil and has pending background agents, Stop keeps the
+// state as running instead of transitioning to waiting_input.
+func determineState(event string, data map[string]any, existing *PaneState) string {
 	switch event {
 	case "SessionStart":
 		return StateWaitingInput
@@ -201,16 +205,22 @@ func determineState(event string, data map[string]any) string {
 	case "PermissionRequest":
 		return StateApprovalWaiting
 	case "Stop":
+		if hasPendingWork(existing) {
+			return StateRunning
+		}
 		return StateWaitingInput
 	case "SessionEnd":
 		return "" // handled specially in cmdUpdateState (removes state file)
 	case "Notification":
 		// Check notification type field (matches hook matcher values)
-		if t, ok := data["type"].(string); ok {
+		if t, ok := data["notification_type"].(string); ok {
 			switch t {
 			case "permission_prompt":
 				return StateApprovalWaiting
 			case "idle_prompt":
+				if hasPendingWork(existing) {
+					return StateRunning
+				}
 				return StateWaitingInput
 			}
 		}
@@ -218,6 +228,48 @@ func determineState(event string, data map[string]any) string {
 	default:
 		return "" // unknown events are ignored
 	}
+}
+
+// backgroundAgentTimeout is the maximum duration to keep pending background agent
+// counts before resetting. Prevents stuck "running" state if an agent crashes
+// without sending a completion notification.
+const backgroundAgentTimeout = 30 * time.Minute
+
+// isBackgroundAgentLaunch checks if a PostToolUse event represents a background
+// agent dispatch. It looks for tool_name "Agent" with tool_input.run_in_background
+// set to true.
+func isBackgroundAgentLaunch(event string, data map[string]any) bool {
+	if event != "PostToolUse" {
+		return false
+	}
+	toolName, _ := data["tool_name"].(string)
+	if toolName != "Agent" {
+		return false
+	}
+	toolInput, ok := data["tool_input"].(map[string]any)
+	if !ok {
+		return false
+	}
+	bg, _ := toolInput["run_in_background"].(bool)
+	return bg
+}
+
+// hasPendingWork reports whether the pane has outstanding background work.
+func hasPendingWork(ps *PaneState) bool {
+	return ps != nil && ps.BackgroundAgents > 0
+}
+
+// shouldResetStaleAgents returns true if background agent tracking has been
+// stale for longer than backgroundAgentTimeout.
+func shouldResetStaleAgents(ps *PaneState) bool {
+	if ps == nil || ps.BackgroundAgents <= 0 {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, ps.LastUpdatedAt)
+	if err != nil {
+		return true // can't parse timestamp, reset to be safe
+	}
+	return time.Since(t) > backgroundAgentTimeout
 }
 
 // cleanupDeadPanes removes state files for panes that no longer exist in tmux.

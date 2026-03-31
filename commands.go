@@ -74,7 +74,7 @@ func cmdShow(args []string) error {
 	ps := findStateByPaneID(*paneID)
 	if ps != nil {
 		fmt.Println("--- State ---")
-		fmt.Printf("state:   %s %s\n", stateIcon(ps.State), ps.State)
+		fmt.Printf("state:   %s %s\n", stateIcon(ps.State), stateLabel(ps))
 		fmt.Printf("session: %s:%s\n", ps.Session, ps.WindowIndex)
 		fmt.Printf("pane:    %s\n", ps.PaneID)
 		if ps.Cwd != "" {
@@ -261,20 +261,59 @@ func cmdUpdateState(args []string) error {
 		return nil
 	}
 
-	// Determine new state from event
-	newState := determineState(*event, data)
+	// Read existing state once for fallback values (branch cache, preview, bg agents)
+	existing := findStateByPaneID(pane.PaneID)
+
+	// Compute background agent count (reset if stale)
+	bgCount := 0
+	if existing != nil && !shouldResetStaleAgents(existing) {
+		bgCount = existing.BackgroundAgents
+	}
+	switch {
+	case *event == "UserPromptSubmit":
+		// New user turn resets background agent tracking
+		bgCount = 0
+	case isBackgroundAgentLaunch(*event, data):
+		bgCount++
+	case *event == "Notification" && bgCount > 0:
+		// Non-permission/idle notification while agents pending = potential completion
+		nt, _ := data["notification_type"].(string)
+		if nt != "permission_prompt" && nt != "idle_prompt" {
+			bgCount--
+		}
+	}
+	if bgCount < 0 {
+		bgCount = 0
+	}
+
+	// Determine new state from event (considering pending background work)
+	newState := determineState(*event, data, existing)
+
+	// Persist bgCount change even when event doesn't trigger a state transition
+	// (e.g., agent completion notification with unknown type)
+	if newState == "" && existing != nil && bgCount != existing.BackgroundAgents {
+		newState = existing.State
+	}
+
 	if newState == "" {
 		return nil // no state change (e.g., unrecognized Notification)
+	}
+
+	// If last background agent just completed, transition to waiting_input
+	if bgCount == 0 && hasPendingWork(existing) && newState == StateRunning {
+		newState = StateWaitingInput
 	}
 
 	// Build preview from event data
 	preview := buildPreview(*event, data)
 
-	// Read existing state once for fallback values (branch cache, preview)
-	existing := findStateByPaneID(pane.PaneID)
-
 	if preview == "" && existing != nil {
 		preview = existing.Preview
+	}
+
+	// Override preview when background agents are running after Stop
+	if *event == "Stop" && bgCount > 0 {
+		preview = fmt.Sprintf("bg agents: %d running", bgCount)
 	}
 
 	// Reuse cached branch to avoid spawning git on every hook event
@@ -287,15 +326,16 @@ func cmdUpdateState(args []string) error {
 	}
 
 	ps := &PaneState{
-		Session:     pane.Session,
-		WindowIndex: pane.WindowIndex,
-		WindowName:  pane.WindowName,
-		PaneID:      pane.PaneID,
-		PaneTitle:   pane.PaneTitle,
-		State:       newState,
-		Cwd:         pane.Cwd,
-		Branch:      branch,
-		Preview:     preview,
+		Session:          pane.Session,
+		WindowIndex:      pane.WindowIndex,
+		WindowName:       pane.WindowName,
+		PaneID:           pane.PaneID,
+		PaneTitle:        pane.PaneTitle,
+		State:            newState,
+		Cwd:              pane.Cwd,
+		Branch:           branch,
+		Preview:          preview,
+		BackgroundAgents: bgCount,
 	}
 
 	return writeState(ps)

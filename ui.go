@@ -44,6 +44,14 @@ func stateColor(state string) string {
 	}
 }
 
+// stateLabel returns the state string with a background agent suffix if applicable.
+func stateLabel(ps *PaneState) string {
+	if ps.BackgroundAgents > 0 {
+		return fmt.Sprintf("%s (+%d bg)", ps.State, ps.BackgroundAgents)
+	}
+	return ps.State
+}
+
 func isColorTerminal() bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
@@ -118,9 +126,10 @@ func renderTable(states []*PaneState, useColor bool) {
 		cwd := shortenPath(ps.Cwd, 38)
 		updated := formatRelativeTime(ps.LastUpdatedAt)
 		session := truncate(ps.Session, 20)
+		label := stateLabel(ps)
 
 		line := fmt.Sprintf("%s %-18s %-22s %-5s %-6s %-40s %s",
-			icon, ps.State, session, ps.WindowIndex, ps.PaneID, cwd, updated)
+			icon, label, session, ps.WindowIndex, ps.PaneID, cwd, updated)
 
 		if useColor {
 			c := stateColor(ps.State)
@@ -144,9 +153,10 @@ func renderTSV(states []*PaneState) {
 		updated := formatRelativeTime(ps.LastUpdatedAt)
 		session := truncate(ps.Session, 22)
 		preview := truncate(ps.Preview, 40)
+		label := stateLabel(ps)
 
 		fmt.Fprintf(os.Stdout, "%s\t%s %-16s\t%-22s\t%-5s\t%-42s\t%-10s\t%s\n",
-			ps.PaneID, icon, ps.State, session, ps.WindowIndex, cwd, updated, preview)
+			ps.PaneID, icon, label, session, ps.WindowIndex, cwd, updated, preview)
 	}
 }
 

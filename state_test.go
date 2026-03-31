@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestStatePriority(t *testing.T) {
@@ -236,6 +237,7 @@ func TestDetermineState(t *testing.T) {
 		name     string
 		event    string
 		data     map[string]any
+		existing *PaneState
 		expected string
 	}{
 		{
@@ -281,6 +283,20 @@ func TestDetermineState(t *testing.T) {
 			expected: StateWaitingInput,
 		},
 		{
+			name:     "Stop with bg agents -> running",
+			event:    "Stop",
+			data:     nil,
+			existing: &PaneState{BackgroundAgents: 2},
+			expected: StateRunning,
+		},
+		{
+			name:     "Stop with zero bg agents -> waiting_input",
+			event:    "Stop",
+			data:     nil,
+			existing: &PaneState{BackgroundAgents: 0},
+			expected: StateWaitingInput,
+		},
+		{
 			name:     "SessionEnd -> no state change (handled specially)",
 			event:    "SessionEnd",
 			data:     nil,
@@ -289,19 +305,26 @@ func TestDetermineState(t *testing.T) {
 		{
 			name:     "Notification permission_prompt -> approval_waiting",
 			event:    "Notification",
-			data:     map[string]any{"type": "permission_prompt"},
+			data:     map[string]any{"notification_type": "permission_prompt"},
 			expected: StateApprovalWaiting,
 		},
 		{
 			name:     "Notification idle_prompt -> waiting_input",
 			event:    "Notification",
-			data:     map[string]any{"type": "idle_prompt"},
+			data:     map[string]any{"notification_type": "idle_prompt"},
 			expected: StateWaitingInput,
+		},
+		{
+			name:     "Notification idle_prompt with bg agents -> running",
+			event:    "Notification",
+			data:     map[string]any{"notification_type": "idle_prompt"},
+			existing: &PaneState{BackgroundAgents: 1},
+			expected: StateRunning,
 		},
 		{
 			name:     "Notification generic -> no change",
 			event:    "Notification",
-			data:     map[string]any{"type": "info", "message": "Task completed"},
+			data:     map[string]any{"notification_type": "info", "message": "Task completed"},
 			expected: "",
 		},
 		{
@@ -314,11 +337,129 @@ func TestDetermineState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := determineState(tt.event, tt.data)
+			got := determineState(tt.event, tt.data, tt.existing)
 			if got != tt.expected {
-				t.Errorf("determineState(%q, %v) = %q, want %q", tt.event, tt.data, got, tt.expected)
+				t.Errorf("determineState(%q, %v, existing) = %q, want %q", tt.event, tt.data, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestIsBackgroundAgentLaunch(t *testing.T) {
+	tests := []struct {
+		name     string
+		event    string
+		data     map[string]any
+		expected bool
+	}{
+		{
+			name:  "PostToolUse Agent with run_in_background true",
+			event: "PostToolUse",
+			data: map[string]any{
+				"tool_name":  "Agent",
+				"tool_input": map[string]any{"run_in_background": true},
+			},
+			expected: true,
+		},
+		{
+			name:  "PostToolUse Agent without run_in_background",
+			event: "PostToolUse",
+			data: map[string]any{
+				"tool_name":  "Agent",
+				"tool_input": map[string]any{"prompt": "do something"},
+			},
+			expected: false,
+		},
+		{
+			name:  "PostToolUse Agent with run_in_background false",
+			event: "PostToolUse",
+			data: map[string]any{
+				"tool_name":  "Agent",
+				"tool_input": map[string]any{"run_in_background": false},
+			},
+			expected: false,
+		},
+		{
+			name:  "PostToolUse non-Agent tool",
+			event: "PostToolUse",
+			data: map[string]any{
+				"tool_name":  "Bash",
+				"tool_input": map[string]any{"command": "ls"},
+			},
+			expected: false,
+		},
+		{
+			name:  "PreToolUse Agent (not PostToolUse)",
+			event: "PreToolUse",
+			data: map[string]any{
+				"tool_name":  "Agent",
+				"tool_input": map[string]any{"run_in_background": true},
+			},
+			expected: false,
+		},
+		{
+			name:     "PostToolUse with no tool_input",
+			event:    "PostToolUse",
+			data:     map[string]any{"tool_name": "Agent"},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isBackgroundAgentLaunch(tt.event, tt.data)
+			if got != tt.expected {
+				t.Errorf("isBackgroundAgentLaunch(%q, data) = %v, want %v", tt.event, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestHasPendingWork(t *testing.T) {
+	if hasPendingWork(nil) {
+		t.Error("expected false for nil PaneState")
+	}
+	if hasPendingWork(&PaneState{BackgroundAgents: 0}) {
+		t.Error("expected false for zero agents")
+	}
+	if !hasPendingWork(&PaneState{BackgroundAgents: 1}) {
+		t.Error("expected true for 1 agent")
+	}
+}
+
+func TestShouldResetStaleAgents(t *testing.T) {
+	if shouldResetStaleAgents(nil) {
+		t.Error("expected false for nil")
+	}
+	if shouldResetStaleAgents(&PaneState{BackgroundAgents: 0}) {
+		t.Error("expected false for zero agents")
+	}
+
+	// Fresh timestamp should not reset
+	fresh := &PaneState{
+		BackgroundAgents: 1,
+		LastUpdatedAt:    time.Now().Format(time.RFC3339),
+	}
+	if shouldResetStaleAgents(fresh) {
+		t.Error("expected false for fresh timestamp")
+	}
+
+	// Stale timestamp should reset
+	stale := &PaneState{
+		BackgroundAgents: 1,
+		LastUpdatedAt:    time.Now().Add(-31 * time.Minute).Format(time.RFC3339),
+	}
+	if !shouldResetStaleAgents(stale) {
+		t.Error("expected true for stale timestamp")
+	}
+
+	// Invalid timestamp should reset
+	invalid := &PaneState{
+		BackgroundAgents: 1,
+		LastUpdatedAt:    "invalid",
+	}
+	if !shouldResetStaleAgents(invalid) {
+		t.Error("expected true for invalid timestamp")
 	}
 }
 

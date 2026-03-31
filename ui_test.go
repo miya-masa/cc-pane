@@ -120,6 +120,50 @@ func captureStdout(fn func()) string {
 	return string(out)
 }
 
+func TestStateLabel(t *testing.T) {
+	tests := []struct {
+		name     string
+		ps       *PaneState
+		expected string
+	}{
+		{
+			name:     "no bg agents",
+			ps:       &PaneState{State: StateRunning, BackgroundAgents: 0},
+			expected: StateRunning,
+		},
+		{
+			name:     "with bg agents",
+			ps:       &PaneState{State: StateRunning, BackgroundAgents: 2},
+			expected: "running (+2 bg)",
+		},
+		{
+			name:     "single bg agent",
+			ps:       &PaneState{State: StateRunning, BackgroundAgents: 1},
+			expected: "running (+1 bg)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stateLabel(tt.ps)
+			if got != tt.expected {
+				t.Errorf("stateLabel() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestRenderTSV_WithBackgroundAgents(t *testing.T) {
+	states := []*PaneState{
+		{PaneID: "%1", State: StateRunning, Session: "main", WindowIndex: "0", Cwd: "/tmp", LastUpdatedAt: "2025-01-01T00:00:00Z", BackgroundAgents: 2},
+	}
+
+	output := captureStdout(func() { renderTSV(states) })
+	if !strings.Contains(output, "(+2 bg)") {
+		t.Errorf("expected TSV output to contain '(+2 bg)', got: %s", output)
+	}
+}
+
 func TestStateColor(t *testing.T) {
 	// approval_waiting should have red+bold
 	c := stateColor(StateApprovalWaiting)
