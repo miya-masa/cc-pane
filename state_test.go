@@ -243,10 +243,10 @@ func TestDetermineState(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "SessionStart -> running",
+			name:     "SessionStart -> waiting_input",
 			event:    "SessionStart",
 			data:     nil,
-			expected: StateRunning,
+			expected: StateWaitingInput,
 		},
 		{
 			name:     "UserPromptSubmit -> running",

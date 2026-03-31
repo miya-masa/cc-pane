@@ -201,7 +201,9 @@ func cleanStaleStates(activePaneIDs map[string]bool) (int, error) {
 // is handled by PermissionRequest.
 func determineState(event string, data map[string]any) string {
 	switch event {
-	case "SessionStart", "UserPromptSubmit":
+	case "SessionStart":
+		return StateWaitingInput
+	case "UserPromptSubmit":
 		return StateRunning
 	case "PreToolUse", "PostToolUse":
 		return StateRunning
