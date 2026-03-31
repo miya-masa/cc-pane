@@ -324,9 +324,11 @@ cc-pick() {
 }
 
 cc-rm() {
-  cc-pane ls --tsv | fzf --no-tmux --delimiter '\t' --with-nth 2.. \
+  cc-pane ls --tsv | fzf --no-tmux --multi --delimiter '\t' --with-nth 2.. \
     --preview 'cc-pane show --pane {1}' \
-    --preview-window down:60%:wrap:follow | cut -f1 | xargs -r cc-pane rm --pane
+    --preview-window down:60%:wrap:follow | cut -f1 | while read -r pane; do
+    cc-pane rm --pane "$pane"
+  done
 }
 `
 
