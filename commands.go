@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // hooksConfigured checks if cc-pane hooks are present in Claude Code settings.
@@ -18,6 +21,59 @@ func hooksConfigured() bool {
 		return false
 	}
 	return strings.Contains(string(data), "cc-pane")
+}
+
+func cmdStatus() error {
+	states, err := listStates()
+	if err != nil {
+		return err
+	}
+	states = cleanupDeadPanes(states, nil)
+	s := formatStatus(states)
+	if s != "" {
+		fmt.Print(s)
+	}
+	return nil
+}
+
+func cmdWatch(args []string) error {
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	interval := fs.Duration("interval", 2*time.Second, "refresh interval")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	useColor := isColorTerminal()
+	for {
+		// Clear screen and move cursor to top-left
+		fmt.Print("\033[H\033[2J")
+
+		// Header with timestamp and status summary
+		states, err := listStates()
+		if err != nil {
+			return err
+		}
+		states = cleanupDeadPanes(states, nil)
+
+		status := formatStatus(states)
+		header := fmt.Sprintf("cc-pane watch (updated %s, every %s)", time.Now().Format("15:04:05"), *interval)
+		if status != "" {
+			header += "  " + status
+		}
+		fmt.Println(header)
+		fmt.Println()
+
+		renderTable(states, useColor)
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(*interval):
+		}
+	}
 }
 
 func cmdLs(args []string) error {
@@ -304,6 +360,11 @@ func cmdUpdateState(args []string) error {
 		newState = StateWaitingInput
 	}
 
+	// Notify when transitioning to approval_waiting (best-effort)
+	if newState == StateApprovalWaiting && (existing == nil || existing.State != StateApprovalWaiting) {
+		notifyApproval(pane)
+	}
+
 	// Build preview from event data
 	preview := buildPreview(*event, data)
 
@@ -378,7 +439,10 @@ cc-rm() {
 
 const tmuxKeybindings = `##### cc-pane #####
 bind L display-popup -w 90% -h 50% -E ". ~/.config/cc-pane/functions.sh && cc-pick"
-bind R display-popup -w 90% -h 50% -E ". ~/.config/cc-pane/functions.sh && cc-rm"`
+bind R display-popup -w 90% -h 50% -E ". ~/.config/cc-pane/functions.sh && cc-rm"
+set -g status-right '#(cc-pane status) | %H:%M'
+set -g status-interval 5
+set -g allow-passthrough on`
 
 func tmuxConfPath() string {
 	home, _ := os.UserHomeDir()

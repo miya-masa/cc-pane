@@ -120,6 +120,27 @@ func getGitBranch(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// getPaneTTY returns the tty device path for a tmux pane.
+func getPaneTTY(paneID string) string {
+	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{pane_tty}").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// notifyApproval sends an OSC 9 notification to the pane's terminal.
+// This works through SSH with iTerm2/WezTerm when tmux allow-passthrough is enabled.
+// Failures are silently ignored (best-effort notification).
+func notifyApproval(pane *TmuxPane) {
+	tty := getPaneTTY(pane.PaneID)
+	if tty == "" {
+		return
+	}
+	// OSC 9 is the iTerm2/Growl notification escape sequence
+	_ = os.WriteFile(tty, []byte("\033]9;🔴 cc-pane: approval needed\a"), 0o200)
+}
+
 // commandVersion returns the version string of a command.
 func commandVersion(name string, args ...string) (string, error) {
 	out, err := exec.Command(name, args...).Output()

@@ -189,6 +189,41 @@ func renderTSV(states []*PaneState) {
 	}
 }
 
+// formatStatus returns a compact summary string for tmux status-right.
+// Example: "🔴1 🟢3 🟡2 ⚪1"
+func formatStatus(states []*PaneState) string {
+	var approval, running, waiting, stale int
+	for _, ps := range states {
+		switch ps.State {
+		case StateApprovalWaiting:
+			approval++
+		case StateRunning:
+			running++
+		case StateWaitingInput:
+			if isStaleWaiting(ps) {
+				stale++
+			} else {
+				waiting++
+			}
+		}
+	}
+
+	var parts []string
+	if approval > 0 {
+		parts = append(parts, fmt.Sprintf("🔴%d", approval))
+	}
+	if waiting > 0 {
+		parts = append(parts, fmt.Sprintf("🟡%d", waiting))
+	}
+	if running > 0 {
+		parts = append(parts, fmt.Sprintf("🟢%d", running))
+	}
+	if stale > 0 {
+		parts = append(parts, fmt.Sprintf("⚪%d", stale))
+	}
+	return strings.Join(parts, " ")
+}
+
 // renderJSON outputs states as JSON to stdout.
 func renderJSON(states []*PaneState) error {
 	if states == nil {

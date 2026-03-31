@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFormatRelativeTime(t *testing.T) {
@@ -175,5 +176,49 @@ func TestStateColor(t *testing.T) {
 	c = stateColor(StateRunning)
 	if c == "" {
 		t.Error("running should have color")
+	}
+}
+
+func TestFormatStatus(t *testing.T) {
+	now := time.Now().Format(time.RFC3339)
+	stale := time.Now().Add(-11 * time.Minute).Format(time.RFC3339)
+
+	tests := []struct {
+		name     string
+		states   []*PaneState
+		expected string
+	}{
+		{
+			name:     "empty",
+			states:   nil,
+			expected: "",
+		},
+		{
+			name: "all types",
+			states: []*PaneState{
+				{State: StateApprovalWaiting, LastUpdatedAt: now},
+				{State: StateRunning, LastUpdatedAt: now},
+				{State: StateWaitingInput, LastUpdatedAt: now},
+				{State: StateWaitingInput, LastUpdatedAt: stale},
+			},
+			expected: "🔴1 🟡1 🟢1 ⚪1",
+		},
+		{
+			name: "only running",
+			states: []*PaneState{
+				{State: StateRunning, LastUpdatedAt: now},
+				{State: StateRunning, LastUpdatedAt: now},
+			},
+			expected: "🟢2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatStatus(tt.states)
+			if got != tt.expected {
+				t.Errorf("formatStatus() = %q, want %q", got, tt.expected)
+			}
+		})
 	}
 }

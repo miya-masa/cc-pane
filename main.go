@@ -15,6 +15,10 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "status":
+		err = cmdStatus()
+	case "watch":
+		err = cmdWatch(os.Args[2:])
 	case "ls":
 		err = cmdLs(os.Args[2:])
 	case "show":
@@ -57,6 +61,8 @@ Usage:
 
 Commands:
   setup          Configure Claude Code hooks and tmux keybinding
+  status         Compact summary for tmux status-right
+  watch          Live-updating dashboard
   ls             List all Claude Code sessions
   show           Show state and pane output for a specific pane
   jump           Jump to a specific pane
