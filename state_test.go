@@ -271,6 +271,12 @@ func TestDetermineState(t *testing.T) {
 			expected: StateRunning,
 		},
 		{
+			name:     "PostToolUse ExitPlanMode -> approval_waiting",
+			event:    "PostToolUse",
+			data:     map[string]any{"tool_name": "ExitPlanMode"},
+			expected: StateApprovalWaiting,
+		},
+		{
 			name:     "PermissionRequest -> approval_waiting",
 			event:    "PermissionRequest",
 			data:     map[string]any{"tool_name": "Bash"},

@@ -201,6 +201,11 @@ func determineState(event string, data map[string]any, existing *PaneState) stri
 	case "UserPromptSubmit":
 		return StateRunning
 	case "PreToolUse", "PostToolUse":
+		if event == "PostToolUse" {
+			if toolName, _ := data["tool_name"].(string); toolName == "ExitPlanMode" {
+				return StateApprovalWaiting
+			}
+		}
 		return StateRunning
 	case "PermissionRequest":
 		return StateApprovalWaiting
