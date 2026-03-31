@@ -23,6 +23,8 @@ func main() {
 		err = cmdShow(os.Args[2:])
 	case "jump":
 		err = cmdJump(os.Args[2:])
+	case "rm":
+		err = cmdRm(os.Args[2:])
 	case "refresh":
 		err = cmdRefresh()
 	case "doctor":
@@ -61,6 +63,7 @@ Commands:
   pick           Select a session with fzf and jump to it
   show           Show state and pane output for a specific pane
   jump           Jump to a specific pane
+  rm             Remove state entries (--pane %ID or --done)
   refresh        Clean up stale state files
   doctor         Check dependencies and configuration
   uninstall      Remove cc-pane hooks and tmux keybinding

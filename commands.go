@@ -31,7 +31,7 @@ func cmdLs(args []string) error {
 	if err != nil {
 		return err
 	}
-	states = reconcileStates(states, nil)
+	states = cleanupDeadPanes(states, nil)
 
 	if *jsonOutput {
 		return renderJSON(states)
@@ -45,7 +45,7 @@ func cmdPick(_ []string) error {
 	if err != nil {
 		return err
 	}
-	states = reconcileStates(states, nil)
+	states = cleanupDeadPanes(states, nil)
 
 	paneID, err := runFzfPicker(states)
 	if err != nil {
@@ -91,17 +91,9 @@ func cmdShow(args []string) error {
 		return fmt.Errorf("--pane is required (e.g., --pane %%12)")
 	}
 
-	// State info (reconcile with live tmux data)
+	// State info
 	ps := findStateByPaneID(*paneID)
 	if ps != nil {
-		if pane, err := getPaneByID(*paneID); err == nil {
-			parentPIDs := pidsWithChildren()
-			if reconcileSingleState(ps, pane.CurrentCommand, parentPIDs[pane.PanePID]) {
-				if wErr := writeState(ps); wErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: failed to update state for %s: %v\n", ps.PaneID, wErr)
-				}
-			}
-		}
 		fmt.Println("--- State ---")
 		fmt.Printf("state:   %s %s\n", stateIcon(ps.State), ps.State)
 		fmt.Printf("session: %s:%s\n", ps.Session, ps.WindowIndex)
@@ -138,6 +130,46 @@ func jumpToPaneByID(paneID string) error {
 	return jumpToPane(pane.Session, pane.WindowIndex, pane.PaneID)
 }
 
+func cmdRm(args []string) error {
+	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
+	paneID := fs.String("pane", "", "pane ID to remove (e.g., %12)")
+	done := fs.Bool("done", false, "remove all done entries")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if *paneID == "" && !*done {
+		return fmt.Errorf("--pane or --done is required")
+	}
+
+	states, err := listStates()
+	if err != nil {
+		return err
+	}
+
+	removed := 0
+	for _, ps := range states {
+		match := false
+		if *paneID != "" && ps.PaneID == *paneID {
+			match = true
+		}
+		if *done && ps.State == StateDone {
+			match = true
+		}
+		if match {
+			path := stateFilePath(ps.Session, ps.WindowIndex, ps.PaneID)
+			os.Remove(path)
+			fmt.Printf("Removed %s (%s:%s %s)\n", ps.PaneID, ps.Session, ps.WindowIndex, ps.State)
+			removed++
+		}
+	}
+
+	if removed == 0 {
+		fmt.Println("No matching entries found")
+	}
+	return nil
+}
+
 func cmdRefresh() error {
 	panes, err := listAllPanes()
 	if err != nil {
@@ -153,13 +185,6 @@ func cmdRefresh() error {
 	if err != nil {
 		return err
 	}
-
-	// Also reconcile live panes (detect exited Claude Code)
-	states, err := listStates()
-	if err != nil {
-		return err
-	}
-	reconcileStates(states, panes)
 
 	fmt.Printf("Cleaned up %d stale state file(s)\n", removed)
 	return nil

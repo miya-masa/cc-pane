@@ -227,55 +227,28 @@ func determineState(event string, data map[string]any) string {
 	}
 }
 
-// reconcileSingleState checks if a pane state should be corrected
-// based on the pane's current running command and whether the shell has children.
-// A pane is considered "exited" only when the current command is a shell AND
-// the shell has no child processes. This avoids false positives when Claude Code
-// is executing a Bash tool (pane_current_command temporarily shows "bash").
-// Returns true if the state was changed.
-func reconcileSingleState(ps *PaneState, currentCommand string, shellHasChildren bool) bool {
-	if ps.State != StateDone && isShellCommand(currentCommand) && !shellHasChildren {
-		ps.State = StateDone
-		ps.Preview = "exited"
-		return true
-	}
-	return false
-}
-
-// reconcileStates cross-references state files with live tmux pane data.
-// It removes state files for panes that no longer exist and marks sessions
-// as done when Claude Code has exited (pane is running a shell).
+// cleanupDeadPanes removes state files for panes that no longer exist in tmux.
 // If panes is nil, it queries tmux for the current pane list.
-func reconcileStates(states []*PaneState, panes []TmuxPane) []*PaneState {
+func cleanupDeadPanes(states []*PaneState, panes []TmuxPane) []*PaneState {
 	if panes == nil {
 		var err error
 		panes, err = listAllPanes()
 		if err != nil {
-			return states // tmux query failed; return as-is
+			return states
 		}
 	}
 
-	paneMap := make(map[string]TmuxPane, len(panes))
+	activeIDs := make(map[string]bool, len(panes))
 	for _, p := range panes {
-		paneMap[p.PaneID] = p
+		activeIDs[p.PaneID] = true
 	}
-
-	parentPIDs := pidsWithChildren()
 
 	var result []*PaneState
 	for _, ps := range states {
-		pane, exists := paneMap[ps.PaneID]
-		if !exists {
-			// Pane no longer exists — remove stale state file
+		if !activeIDs[ps.PaneID] {
 			path := stateFilePath(ps.Session, ps.WindowIndex, ps.PaneID)
 			os.Remove(path)
 			continue
-		}
-
-		if reconcileSingleState(ps, pane.CurrentCommand, parentPIDs[pane.PanePID]) {
-			if err := writeState(ps); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to update state for %s: %v\n", ps.PaneID, err)
-			}
 		}
 		result = append(result, ps)
 	}

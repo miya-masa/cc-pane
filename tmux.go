@@ -9,17 +9,15 @@ import (
 
 // TmuxPane holds information about a tmux pane.
 type TmuxPane struct {
-	Session        string
-	WindowIndex    string
-	WindowName     string
-	PaneID         string
-	PaneTitle      string
-	Cwd            string
-	CurrentCommand string
-	PanePID        string
+	Session     string
+	WindowIndex string
+	WindowName  string
+	PaneID      string
+	PaneTitle   string
+	Cwd         string
 }
 
-const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}"
+const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}"
 
 // getCurrentPane returns info about the pane identified by $TMUX_PANE.
 func getCurrentPane() (*TmuxPane, error) {
@@ -49,55 +47,18 @@ func getPaneByID(paneID string) (*TmuxPane, error) {
 }
 
 func parseTmuxPaneLine(line string) (*TmuxPane, error) {
-	parts := strings.SplitN(line, "\t", 8)
-	if len(parts) < 8 {
+	parts := strings.SplitN(line, "\t", 6)
+	if len(parts) < 6 {
 		return nil, fmt.Errorf("unexpected tmux output format: %q", line)
 	}
 	return &TmuxPane{
-		Session:        parts[0],
-		WindowIndex:    parts[1],
-		WindowName:     parts[2],
-		PaneID:         parts[3],
-		PaneTitle:      parts[4],
-		Cwd:            parts[5],
-		CurrentCommand: parts[6],
-		PanePID:        parts[7],
+		Session:     parts[0],
+		WindowIndex: parts[1],
+		WindowName:  parts[2],
+		PaneID:      parts[3],
+		PaneTitle:   parts[4],
+		Cwd:         parts[5],
 	}, nil
-}
-
-// isShellCommand checks if the given command name is a shell process.
-// When a tmux pane shows a shell as the current command, it means
-// any previously running program (e.g., Claude Code) has exited.
-func isShellCommand(cmd string) bool {
-	// Extract basename in case tmux reports full path
-	if idx := strings.LastIndex(cmd, "/"); idx >= 0 {
-		cmd = cmd[idx+1:]
-	}
-	// Strip leading dash (login shell indicator, e.g., "-zsh")
-	cmd = strings.TrimPrefix(cmd, "-")
-
-	switch cmd {
-	case "bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "ash":
-		return true
-	}
-	return false
-}
-
-// pidsWithChildren returns a set of PIDs that have at least one child process.
-// Uses a single ps invocation to check all PIDs efficiently.
-func pidsWithChildren() map[string]bool {
-	out, err := exec.Command("ps", "-eo", "ppid=").Output()
-	if err != nil {
-		return nil
-	}
-	result := make(map[string]bool)
-	for _, line := range strings.Split(string(out), "\n") {
-		ppid := strings.TrimSpace(line)
-		if ppid != "" {
-			result[ppid] = true
-		}
-	}
-	return result
 }
 
 // listAllPanes returns all tmux panes across all sessions.
