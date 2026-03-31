@@ -330,6 +330,15 @@ cc-rm() {
 }
 `
 
+const tmuxKeybindings = `##### cc-pane #####
+bind L display-popup -w 90% -h 50% -E ". ~/.config/cc-pane/functions.sh && cc-pick"
+bind R display-popup -w 90% -h 50% -E ". ~/.config/cc-pane/functions.sh && cc-rm"`
+
+func tmuxConfPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".tmux.conf")
+}
+
 func claudeSettingsPath() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".claude", "settings.json")
@@ -364,6 +373,15 @@ func cmdSetup(args []string) error {
 		return fmt.Errorf("shell functions: %w", err)
 	}
 	if shellChanged {
+		anyChange = true
+	}
+
+	// 3. tmux keybindings
+	tmuxChanged, err := setupTmuxKeybindings(*dryRun)
+	if err != nil {
+		return fmt.Errorf("tmux config: %w", err)
+	}
+	if tmuxChanged {
 		anyChange = true
 	}
 
@@ -558,6 +576,70 @@ func shellRcPaths() []string {
 	return paths
 }
 
+func setupTmuxKeybindings(dryRun bool) (bool, error) {
+	path := tmuxConfPath()
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	if strings.Contains(string(data), ccPaneMarker) {
+		fmt.Println("  ✓ tmux keybindings already configured")
+		return false, nil
+	}
+
+	if dryRun {
+		fmt.Println("  ~ Would add keybindings to", path)
+		return true, nil
+	}
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+
+	if _, err := fmt.Fprintf(f, "\n%s\n", tmuxKeybindings); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+
+	fmt.Printf("  ✓ Added keybindings to %s (prefix+L: pick, prefix+R: rm)\n", path)
+	return true, nil
+}
+
+func uninstallTmuxKeybindings() error {
+	path := tmuxConfPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var filtered []string
+	changed := false
+	for _, line := range lines {
+		if strings.Contains(line, ccPaneMarker) {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+
+	if !changed {
+		fmt.Println("  ✓ No tmux keybindings found")
+		return nil
+	}
+
+	if err := os.WriteFile(path, []byte(strings.Join(filtered, "\n")), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("  ✓ Removed cc-pane keybindings from %s\n", path)
+	return nil
+}
+
 func cmdUninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
 	purge := fs.Bool("purge", false, "also remove state directory")
@@ -575,7 +657,12 @@ func cmdUninstall(args []string) error {
 		fmt.Fprintf(os.Stderr, "  ! shell functions: %v\n", err)
 	}
 
-	// 3. Optionally remove state directory
+	// 3. Remove tmux keybindings
+	if err := uninstallTmuxKeybindings(); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! tmux config: %v\n", err)
+	}
+
+	// 4. Optionally remove state directory
 	if *purge {
 		dir := stateDir()
 		if err := os.RemoveAll(dir); err != nil {
