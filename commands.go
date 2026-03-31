@@ -178,14 +178,6 @@ func cmdDoctor() error {
 		return v, true
 	})
 
-	check("jq (optional)", func() (string, bool) {
-		v, err := commandVersion("jq", "--version")
-		if err != nil {
-			return "not found (optional, used for preview)", true
-		}
-		return v, true
-	})
-
 	check("tmux session", func() (string, bool) {
 		if os.Getenv("TMUX") == "" {
 			return "not running inside tmux", false
