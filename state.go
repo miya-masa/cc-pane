@@ -16,9 +16,6 @@ const (
 	StateRunning         = "running"
 	StateWaitingInput    = "waiting_input"
 	StateApprovalWaiting = "approval_waiting"
-	StateIdle            = "idle"
-	StateDone            = "done"
-	StateUnknown         = "unknown"
 )
 
 // PaneState represents the tracked state of a Claude Code session in a tmux pane.
@@ -44,14 +41,8 @@ func StatePriority(state string) int {
 		return 1
 	case StateRunning:
 		return 2
-	case StateUnknown:
-		return 3
-	case StateIdle:
-		return 4
-	case StateDone:
-		return 5
 	default:
-		return 6
+		return 3
 	}
 }
 
@@ -210,7 +201,7 @@ func determineState(event string, data map[string]any) string {
 	case "PermissionRequest":
 		return StateApprovalWaiting
 	case "Stop":
-		return StateDone
+		return StateWaitingInput
 	case "SessionEnd":
 		return "" // handled specially in cmdUpdateState (removes state file)
 	case "Notification":
@@ -225,7 +216,7 @@ func determineState(event string, data map[string]any) string {
 		}
 		return "" // no state change for other notification types
 	default:
-		return StateUnknown
+		return "" // unknown events are ignored
 	}
 }
 
@@ -255,18 +246,6 @@ func cleanupDeadPanes(states []*PaneState, panes []TmuxPane) []*PaneState {
 		result = append(result, ps)
 	}
 	return result
-}
-
-// looksLikeQuestion checks if pane content ends with a question.
-// Used to distinguish "waiting for user answer" from "task completed".
-func looksLikeQuestion(content string) bool {
-	for _, line := range strings.Split(content, "\n") {
-		trimmed := strings.TrimRight(line, " \t")
-		if trimmed != "" && strings.HasSuffix(trimmed, "?") {
-			return true
-		}
-	}
-	return false
 }
 
 // previewMaxLen is the maximum length of preview text before truncation.

@@ -15,9 +15,6 @@ func TestStatePriority(t *testing.T) {
 		{StateApprovalWaiting, 0},
 		{StateWaitingInput, 1},
 		{StateRunning, 2},
-		{StateUnknown, 3},
-		{StateIdle, 4},
-		{StateDone, 5},
 	}
 
 	for _, tt := range tests {
@@ -108,7 +105,6 @@ func TestListStates_SortedByPriority(t *testing.T) {
 		{Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
 		{Session: "s", WindowIndex: "1", PaneID: "%2", State: StateApprovalWaiting, Cwd: "/tmp"},
 		{Session: "s", WindowIndex: "2", PaneID: "%3", State: StateWaitingInput, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "3", PaneID: "%4", State: StateDone, Cwd: "/tmp"},
 	}
 
 	for _, ps := range states {
@@ -121,11 +117,11 @@ func TestListStates_SortedByPriority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listStates: %v", err)
 	}
-	if len(got) != 4 {
-		t.Fatalf("expected 4 states, got %d", len(got))
+	if len(got) != 3 {
+		t.Fatalf("expected 3 states, got %d", len(got))
 	}
 
-	expectedOrder := []string{StateApprovalWaiting, StateWaitingInput, StateRunning, StateDone}
+	expectedOrder := []string{StateApprovalWaiting, StateWaitingInput, StateRunning}
 	for i, want := range expectedOrder {
 		if got[i].State != want {
 			t.Errorf("position %d: state = %q, want %q", i, got[i].State, want)
@@ -164,8 +160,8 @@ func TestCleanStaleStates(t *testing.T) {
 
 	states := []*PaneState{
 		{Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "1", PaneID: "%2", State: StateIdle, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "2", PaneID: "%3", State: StateDone, Cwd: "/tmp"},
+		{Session: "s", WindowIndex: "1", PaneID: "%2", State: StateWaitingInput, Cwd: "/tmp"},
+		{Session: "s", WindowIndex: "2", PaneID: "%3", State: StateApprovalWaiting, Cwd: "/tmp"},
 	}
 	for _, ps := range states {
 		writeState(ps)
@@ -279,10 +275,10 @@ func TestDetermineState(t *testing.T) {
 			expected: StateApprovalWaiting,
 		},
 		{
-			name:     "Stop -> done",
+			name:     "Stop -> waiting_input",
 			event:    "Stop",
 			data:     nil,
-			expected: StateDone,
+			expected: StateWaitingInput,
 		},
 		{
 			name:     "SessionEnd -> no state change (handled specially)",
@@ -309,10 +305,10 @@ func TestDetermineState(t *testing.T) {
 			expected: "",
 		},
 		{
-			name:     "Unknown event -> unknown",
+			name:     "Unknown event -> no change",
 			event:    "SomeNewEvent",
 			data:     nil,
-			expected: StateUnknown,
+			expected: "",
 		},
 	}
 
@@ -321,31 +317,6 @@ func TestDetermineState(t *testing.T) {
 			got := determineState(tt.event, tt.data)
 			if got != tt.expected {
 				t.Errorf("determineState(%q, %v) = %q, want %q", tt.event, tt.data, got, tt.expected)
-			}
-		})
-	}
-}
-
-func TestLooksLikeQuestion(t *testing.T) {
-	tests := []struct {
-		name     string
-		content  string
-		expected bool
-	}{
-		{"question mark at end", "Would you like to proceed?", true},
-		{"question in multiline", "Here is the result.\nShould I continue?", true},
-		{"question with trailing spaces", "Is this ok?   ", true},
-		{"no question", "Done! All tests pass.", false},
-		{"empty content", "", false},
-		{"question mark in middle", "file?.go is found", false},
-		{"just whitespace lines", "  \n\t\n  ", false},
-		{"mixed lines with question", "Running tests...\nAll passed.\nAnything else you need?", true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := looksLikeQuestion(tt.content); got != tt.expected {
-				t.Errorf("looksLikeQuestion(%q) = %v, want %v", tt.content, got, tt.expected)
 			}
 		})
 	}

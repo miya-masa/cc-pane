@@ -70,7 +70,7 @@ func TestTruncate(t *testing.T) {
 func TestStateIcon(t *testing.T) {
 	// Each state should have a distinct non-empty icon
 	icons := map[string]string{}
-	for _, state := range []string{StateApprovalWaiting, StateWaitingInput, StateRunning, StateIdle, StateDone, StateUnknown} {
+	for _, state := range []string{StateApprovalWaiting, StateWaitingInput, StateRunning} {
 		icon := stateIcon(state)
 		if icon == "" {
 			t.Errorf("stateIcon(%q) returned empty", state)
@@ -85,7 +85,7 @@ func TestStateIcon(t *testing.T) {
 func TestRenderTSV(t *testing.T) {
 	states := []*PaneState{
 		{PaneID: "%1", State: StateRunning, Session: "main", WindowIndex: "0", Cwd: "/tmp", LastUpdatedAt: "2025-01-01T00:00:00Z", Preview: "tool: Bash"},
-		{PaneID: "%2", State: StateDone, Session: "dev", WindowIndex: "1", Cwd: "/home", LastUpdatedAt: "2025-01-01T00:00:00Z", Preview: "session ended"},
+		{PaneID: "%2", State: StateWaitingInput, Session: "dev", WindowIndex: "1", Cwd: "/home", LastUpdatedAt: "2025-01-01T00:00:00Z", Preview: "waiting for input"},
 	}
 
 	// Capture output by redirecting stdout

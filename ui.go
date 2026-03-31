@@ -14,7 +14,6 @@ const (
 	colorRed    = "\033[31m"
 	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
-	colorGray   = "\033[90m"
 	colorBold   = "\033[1m"
 )
 
@@ -27,10 +26,6 @@ func stateIcon(state string) string {
 		return "🟡"
 	case StateRunning:
 		return "🟢"
-	case StateIdle:
-		return "⚪"
-	case StateDone:
-		return "✅"
 	default:
 		return "❓"
 	}
@@ -44,8 +39,6 @@ func stateColor(state string) string {
 		return colorYellow
 	case StateRunning:
 		return colorGreen
-	case StateIdle, StateDone:
-		return colorGray
 	default:
 		return ""
 	}

@@ -267,13 +267,6 @@ func cmdUpdateState(args []string) error {
 		return nil // no state change (e.g., unrecognized Notification)
 	}
 
-	// For Stop events, check pane content to distinguish done vs waiting_input
-	if *event == "Stop" && newState == StateDone {
-		if content, err := getPaneContent(pane.PaneID, 3); err == nil && looksLikeQuestion(content) {
-			newState = StateWaitingInput
-		}
-	}
-
 	// Build preview from event data
 	preview := buildPreview(*event, data)
 

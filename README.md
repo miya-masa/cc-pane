@@ -159,8 +159,7 @@ cc-pane ls --tsv | cut -f2 | sort | uniq -c
 | PreToolUse                         | `running`          | Tool is about to execute                 |
 | PostToolUse                        | `running`          | Tool completed                           |
 | PermissionRequest                  | `approval_waiting` | Waiting for user to approve a tool       |
-| Stop                               | `done`             | Claude stopped responding                |
-| Stop (pane ends with `?`)          | `waiting_input`    | Claude asked a question                  |
+| Stop                               | `waiting_input`    | Claude stopped, waiting for next input   |
 | SessionEnd                         | *(file removed)*   | Session ended, state file deleted        |
 | Notification (`permission_prompt`) | `approval_waiting` | Permission prompt notification           |
 | Notification (`idle_prompt`)       | `waiting_input`    | Idle prompt notification                 |
@@ -172,9 +171,6 @@ Display order in listings (highest priority first):
 1. `approval_waiting` 🔴 — Needs immediate user action
 2. `waiting_input` 🟡 — Waiting for user input
 3. `running` 🟢 — Actively working
-4. `unknown` ❓ — State could not be determined
-5. `idle` ⚪ — Idle
-6. `done` ✅ — Completed
 
 ## State Files
 
