@@ -9,15 +9,16 @@ import (
 
 // TmuxPane holds information about a tmux pane.
 type TmuxPane struct {
-	Session     string
-	WindowIndex string
-	WindowName  string
-	PaneID      string
-	PaneTitle   string
-	Cwd         string
+	Session        string
+	WindowIndex    string
+	WindowName     string
+	PaneID         string
+	PaneTitle      string
+	Cwd            string
+	CurrentCommand string
 }
 
-const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}"
+const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}\t#{pane_current_command}"
 
 // getCurrentPane returns info about the pane identified by $TMUX_PANE.
 func getCurrentPane() (*TmuxPane, error) {
@@ -47,18 +48,37 @@ func getPaneByID(paneID string) (*TmuxPane, error) {
 }
 
 func parseTmuxPaneLine(line string) (*TmuxPane, error) {
-	parts := strings.SplitN(line, "\t", 6)
-	if len(parts) < 6 {
+	parts := strings.SplitN(line, "\t", 7)
+	if len(parts) < 7 {
 		return nil, fmt.Errorf("unexpected tmux output format: %q", line)
 	}
 	return &TmuxPane{
-		Session:     parts[0],
-		WindowIndex: parts[1],
-		WindowName:  parts[2],
-		PaneID:      parts[3],
-		PaneTitle:   parts[4],
-		Cwd:         parts[5],
+		Session:        parts[0],
+		WindowIndex:    parts[1],
+		WindowName:     parts[2],
+		PaneID:         parts[3],
+		PaneTitle:      parts[4],
+		Cwd:            parts[5],
+		CurrentCommand: parts[6],
 	}, nil
+}
+
+// isShellCommand checks if the given command name is a shell process.
+// When a tmux pane shows a shell as the current command, it means
+// any previously running program (e.g., Claude Code) has exited.
+func isShellCommand(cmd string) bool {
+	// Extract basename in case tmux reports full path
+	if idx := strings.LastIndex(cmd, "/"); idx >= 0 {
+		cmd = cmd[idx+1:]
+	}
+	// Strip leading dash (login shell indicator, e.g., "-zsh")
+	cmd = strings.TrimPrefix(cmd, "-")
+
+	switch cmd {
+	case "bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh", "ash":
+		return true
+	}
+	return false
 }
 
 // listAllPanes returns all tmux panes across all sessions.

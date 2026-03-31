@@ -31,6 +31,7 @@ func cmdLs(args []string) error {
 	if err != nil {
 		return err
 	}
+	states = reconcileStates(states, nil)
 
 	if *jsonOutput {
 		return renderJSON(states)
@@ -44,6 +45,7 @@ func cmdPick(_ []string) error {
 	if err != nil {
 		return err
 	}
+	states = reconcileStates(states, nil)
 
 	paneID, err := runFzfPicker(states)
 	if err != nil {
@@ -89,9 +91,16 @@ func cmdShow(args []string) error {
 		return fmt.Errorf("--pane is required (e.g., --pane %%12)")
 	}
 
-	// State info
+	// State info (reconcile with live tmux data)
 	ps := findStateByPaneID(*paneID)
 	if ps != nil {
+		if pane, err := getPaneByID(*paneID); err == nil {
+			if reconcileSingleState(ps, pane.CurrentCommand) {
+				if wErr := writeState(ps); wErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: failed to update state for %s: %v\n", ps.PaneID, wErr)
+				}
+			}
+		}
 		fmt.Println("--- State ---")
 		fmt.Printf("state:   %s %s\n", stateIcon(ps.State), ps.State)
 		fmt.Printf("session: %s:%s\n", ps.Session, ps.WindowIndex)
@@ -143,6 +152,13 @@ func cmdRefresh() error {
 	if err != nil {
 		return err
 	}
+
+	// Also reconcile live panes (detect exited Claude Code)
+	states, err := listStates()
+	if err != nil {
+		return err
+	}
+	reconcileStates(states, panes)
 
 	fmt.Printf("Cleaned up %d stale state file(s)\n", removed)
 	return nil
@@ -428,7 +444,8 @@ func mergeHooks(settings map[string]any) bool {
 		settings["hooks"] = hooks
 	}
 
-	changed := false
+	changed := removeNullHooks(hooks)
+
 	for _, event := range requiredHookEvents {
 		entries := toSlice(hooks[event])
 		if containsCCPane(entries) {
@@ -542,6 +559,43 @@ func cmdUninstall(args []string) error {
 	return nil
 }
 
+// removeNullHooks deletes null entries from the hooks map.
+func removeNullHooks(hooks map[string]any) bool {
+	changed := false
+	for event, val := range hooks {
+		if val == nil {
+			delete(hooks, event)
+			changed = true
+		}
+	}
+	return changed
+}
+
+// removeHookEntries removes all cc-pane hook entries from the hooks map.
+// It also deletes keys that become empty or were already null.
+// Returns true if any changes were made.
+func removeHookEntries(hooks map[string]any) bool {
+	changed := removeNullHooks(hooks)
+	for event, val := range hooks {
+		entries := toSlice(val)
+		var filtered []any
+		for _, entry := range entries {
+			entryJSON, _ := json.Marshal(entry)
+			if !strings.Contains(string(entryJSON), ccPaneMarker) {
+				filtered = append(filtered, entry)
+			} else {
+				changed = true
+			}
+		}
+		if len(filtered) == 0 {
+			delete(hooks, event)
+		} else {
+			hooks[event] = filtered
+		}
+	}
+	return changed
+}
+
 func uninstallClaudeHooks() error {
 	path := claudeSettingsPath()
 	data, err := os.ReadFile(path)
@@ -560,20 +614,7 @@ func uninstallClaudeHooks() error {
 		return nil
 	}
 
-	changed := false
-	for event, val := range hooks {
-		entries := toSlice(val)
-		var filtered []any
-		for _, entry := range entries {
-			entryJSON, _ := json.Marshal(entry)
-			if !strings.Contains(string(entryJSON), ccPaneMarker) {
-				filtered = append(filtered, entry)
-			} else {
-				changed = true
-			}
-		}
-		hooks[event] = filtered
-	}
+	changed := removeHookEntries(hooks)
 
 	if !changed {
 		fmt.Println("  ✓ No cc-pane hooks found")

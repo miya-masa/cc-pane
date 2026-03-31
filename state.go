@@ -225,6 +225,56 @@ func determineState(event string, data map[string]any) string {
 	}
 }
 
+// reconcileSingleState checks if a pane state should be corrected
+// based on the pane's current running command.
+// Returns true if the state was changed.
+func reconcileSingleState(ps *PaneState, currentCommand string) bool {
+	if ps.State != StateDone && isShellCommand(currentCommand) {
+		ps.State = StateDone
+		ps.Preview = "exited"
+		return true
+	}
+	return false
+}
+
+// reconcileStates cross-references state files with live tmux pane data.
+// It removes state files for panes that no longer exist and marks sessions
+// as done when Claude Code has exited (pane is running a shell).
+// If panes is nil, it queries tmux for the current pane list.
+func reconcileStates(states []*PaneState, panes []TmuxPane) []*PaneState {
+	if panes == nil {
+		var err error
+		panes, err = listAllPanes()
+		if err != nil {
+			return states // tmux query failed; return as-is
+		}
+	}
+
+	paneMap := make(map[string]TmuxPane, len(panes))
+	for _, p := range panes {
+		paneMap[p.PaneID] = p
+	}
+
+	var result []*PaneState
+	for _, ps := range states {
+		pane, exists := paneMap[ps.PaneID]
+		if !exists {
+			// Pane no longer exists — remove stale state file
+			path := stateFilePath(ps.Session, ps.WindowIndex, ps.PaneID)
+			os.Remove(path)
+			continue
+		}
+
+		if reconcileSingleState(ps, pane.CurrentCommand) {
+			if err := writeState(ps); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: failed to update state for %s: %v\n", ps.PaneID, err)
+			}
+		}
+		result = append(result, ps)
+	}
+	return result
+}
+
 // looksLikeQuestion checks if pane content ends with a question.
 // Used to distinguish "waiting for user answer" from "task completed".
 func looksLikeQuestion(content string) bool {

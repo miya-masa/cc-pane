@@ -442,3 +442,95 @@ func TestWriteState_JSONRoundtrip(t *testing.T) {
 		t.Errorf("JSON branch = %v", raw["branch"])
 	}
 }
+
+func TestIsShellCommand(t *testing.T) {
+	tests := []struct {
+		cmd      string
+		expected bool
+	}{
+		{"bash", true},
+		{"zsh", true},
+		{"fish", true},
+		{"sh", true},
+		{"dash", true},
+		{"ksh", true},
+		{"tcsh", true},
+		{"csh", true},
+		{"ash", true},
+		{"-zsh", true},         // login shell
+		{"-bash", true},        // login shell
+		{"/usr/bin/zsh", true}, // full path
+		{"/usr/local/bin/fish", true},
+		{"/bin/sh", true},
+		{"node", false},
+		{"claude", false},
+		{"python3", false},
+		{"vim", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			if got := isShellCommand(tt.cmd); got != tt.expected {
+				t.Errorf("isShellCommand(%q) = %v, want %v", tt.cmd, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestParseTmuxPaneLine_WithCommand(t *testing.T) {
+	line := "main\t0\tdev\t%12\tclaude-code\t/home/user/project\tzsh"
+	pane, err := parseTmuxPaneLine(line)
+	if err != nil {
+		t.Fatalf("parseTmuxPaneLine: %v", err)
+	}
+
+	if pane.Session != "main" {
+		t.Errorf("Session = %q, want %q", pane.Session, "main")
+	}
+	if pane.PaneID != "%12" {
+		t.Errorf("PaneID = %q, want %q", pane.PaneID, "%12")
+	}
+	if pane.CurrentCommand != "zsh" {
+		t.Errorf("CurrentCommand = %q, want %q", pane.CurrentCommand, "zsh")
+	}
+}
+
+func TestParseTmuxPaneLine_TooFewFields(t *testing.T) {
+	line := "main\t0\tdev\t%12\tclaude-code\t/home/user"
+	_, err := parseTmuxPaneLine(line)
+	if err == nil {
+		t.Error("expected error for 6-field line, got nil")
+	}
+}
+
+func TestReconcileSingleState(t *testing.T) {
+	tests := []struct {
+		name           string
+		state          string
+		currentCommand string
+		wantChanged    bool
+		wantState      string
+	}{
+		{"running+zsh -> done", StateRunning, "zsh", true, StateDone},
+		{"waiting_input+bash -> done", StateWaitingInput, "bash", true, StateDone},
+		{"approval_waiting+fish -> done", StateApprovalWaiting, "fish", true, StateDone},
+		{"done+zsh -> no change", StateDone, "zsh", false, StateDone},
+		{"running+node -> no change", StateRunning, "node", false, StateRunning},
+		{"running+claude -> no change", StateRunning, "claude", false, StateRunning},
+		{"waiting_input+node -> no change", StateWaitingInput, "node", false, StateWaitingInput},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ps := &PaneState{State: tt.state}
+			changed := reconcileSingleState(ps, tt.currentCommand)
+			if changed != tt.wantChanged {
+				t.Errorf("changed = %v, want %v", changed, tt.wantChanged)
+			}
+			if ps.State != tt.wantState {
+				t.Errorf("state = %q, want %q", ps.State, tt.wantState)
+			}
+		})
+	}
+}
