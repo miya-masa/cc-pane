@@ -1,0 +1,17 @@
+# Binary
+/cc-pane
+
+# Test binary
+*.test
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Superpowers (planning docs, not committed)
+docs/superpowers/
