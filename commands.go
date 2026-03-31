@@ -485,33 +485,77 @@ func toSlice(v any) []any {
 	return nil
 }
 
+const shellRcSourceLine = `source "$HOME/.config/cc-pane/functions.sh" # cc-pane`
+
 func setupShellFunctions(dryRun bool) (bool, error) {
+	changed := false
+
+	// 1. Write functions file
 	path := shellFunctionsPath()
-
-	// Check if already exists with current content
 	existing, err := os.ReadFile(path)
-	if err == nil && string(existing) == shellFunctionsContent {
+	if err != nil || string(existing) != shellFunctionsContent {
+		if dryRun {
+			fmt.Println("  ~ Would write shell functions to", path)
+		} else {
+			dir := filepath.Dir(path)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return false, fmt.Errorf("mkdir %s: %w", dir, err)
+			}
+			if err := os.WriteFile(path, []byte(shellFunctionsContent), 0o644); err != nil {
+				return false, fmt.Errorf("write %s: %w", path, err)
+			}
+			fmt.Printf("  ✓ Wrote shell functions to %s\n", path)
+		}
+		changed = true
+	} else {
 		fmt.Println("  ✓ Shell functions already up to date")
-		return false, nil
 	}
 
-	if dryRun {
-		fmt.Println("  ~ Would write shell functions to", path)
-		return true, nil
+	// 2. Add source line to shell rc
+	for _, rcPath := range shellRcPaths() {
+		data, err := os.ReadFile(rcPath)
+		if err != nil {
+			continue // rc file doesn't exist, skip
+		}
+		if strings.Contains(string(data), ccPaneMarker) {
+			fmt.Printf("  ✓ Source line already in %s\n", rcPath)
+			continue
+		}
+		if dryRun {
+			fmt.Printf("  ~ Would add source line to %s\n", rcPath)
+			changed = true
+			continue
+		}
+		f, err := os.OpenFile(rcPath, os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return false, fmt.Errorf("open %s: %w", rcPath, err)
+		}
+		_, wErr := fmt.Fprintf(f, "\n%s\n", shellRcSourceLine)
+		f.Close()
+		if wErr != nil {
+			return false, fmt.Errorf("write %s: %w", rcPath, wErr)
+		}
+		fmt.Printf("  ✓ Added source line to %s\n", rcPath)
+		changed = true
 	}
 
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false, fmt.Errorf("mkdir %s: %w", dir, err)
-	}
+	return changed, nil
+}
 
-	if err := os.WriteFile(path, []byte(shellFunctionsContent), 0o644); err != nil {
-		return false, fmt.Errorf("write %s: %w", path, err)
+// shellRcPaths returns existing shell rc files to configure.
+func shellRcPaths() []string {
+	home, _ := os.UserHomeDir()
+	candidates := []string{
+		filepath.Join(home, ".zshrc"),
+		filepath.Join(home, ".bashrc"),
 	}
-
-	fmt.Printf("  ✓ Wrote shell functions to %s\n", path)
-	fmt.Printf("    Add to your shell rc: source %s\n", path)
-	return true, nil
+	var paths []string
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 func cmdUninstall(args []string) error {
@@ -621,6 +665,31 @@ func uninstallClaudeHooks() error {
 }
 
 func uninstallShellFunctions() error {
+	// 1. Remove source lines from shell rc files
+	for _, rcPath := range shellRcPaths() {
+		data, err := os.ReadFile(rcPath)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		var filtered []string
+		removed := false
+		for _, line := range lines {
+			if strings.Contains(line, ccPaneMarker) {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		if removed {
+			if err := os.WriteFile(rcPath, []byte(strings.Join(filtered, "\n")), 0o644); err != nil {
+				return fmt.Errorf("write %s: %w", rcPath, err)
+			}
+			fmt.Printf("  ✓ Removed source line from %s\n", rcPath)
+		}
+	}
+
+	// 2. Remove functions file
 	path := shellFunctionsPath()
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
