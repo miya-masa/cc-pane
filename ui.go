@@ -141,14 +141,14 @@ func renderTable(states []*PaneState, useColor bool) {
 
 	// Emoji icons are 2 display columns but 4 bytes — avoid %-Ns formatting for them.
 	// Use manual padding: icon + space, then fixed-width ASCII columns.
-	header := fmt.Sprintf("   %-18s %-22s %-5s %-6s %-40s %s",
-		"STATE", "SESSION", "WIN", "PANE", "CWD", "UPDATED")
+	header := fmt.Sprintf("   %-18s %-22s %-14s %-6s %-40s %s",
+		"STATE", "SESSION", "WINDOW", "PANE", "CWD", "UPDATED")
 	if useColor {
 		fmt.Printf("%s%s%s\n", colorBold, header, colorReset)
 	} else {
 		fmt.Println(header)
 	}
-	fmt.Println(strings.Repeat("─", 100))
+	fmt.Println(strings.Repeat("─", 109))
 
 	for _, ps := range states {
 		icon := paneIcon(ps)
@@ -157,8 +157,9 @@ func renderTable(states []*PaneState, useColor bool) {
 		session := truncate(ps.Session, 20)
 		label := stateLabel(ps)
 
-		line := fmt.Sprintf("%s %-18s %-22s %-5s %-6s %-40s %s",
-			icon, label, session, ps.WindowIndex, ps.PaneID, cwd, updated)
+		win := truncate(ps.WindowIndex+":"+ps.WindowName, 12)
+		line := fmt.Sprintf("%s %-18s %-22s %-14s %-6s %-40s %s",
+			icon, label, session, win, ps.PaneID, cwd, updated)
 
 		if useColor {
 			c := paneColor(ps)
@@ -184,8 +185,9 @@ func renderTSV(states []*PaneState) {
 		preview := truncate(ps.Preview, 40)
 		label := stateLabel(ps)
 
-		fmt.Fprintf(os.Stdout, "%s\t%s %-16s\t%-22s\t%-5s\t%-42s\t%-10s\t%s\n",
-			ps.PaneID, icon, label, session, ps.WindowIndex, cwd, updated, preview)
+		win := truncate(ps.WindowIndex+":"+ps.WindowName, 14)
+		fmt.Fprintf(os.Stdout, "%s\t%s %-16s\t%-22s\t%-14s\t%-42s\t%-10s\t%s\n",
+			ps.PaneID, icon, label, session, win, cwd, updated, preview)
 	}
 }
 
