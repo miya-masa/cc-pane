@@ -1,5 +1,8 @@
 # cc-pane
 
+[![CI](https://github.com/miya-masa/cc-pane/actions/workflows/ci.yml/badge.svg)](https://github.com/miya-masa/cc-pane/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A lightweight CLI tool to monitor Claude Code session states across tmux panes.
 
 ## Overview
