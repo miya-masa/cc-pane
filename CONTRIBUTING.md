@@ -1,49 +1,49 @@
 # Contributing to cc-pane
 
-cc-pane へのコントリビューションを歓迎します。
+Contributions to cc-pane are welcome!
 
-## 開発環境
+## Development Environment
 
-- Go 1.22 以上
-- tmux (動作確認用)
+- Go 1.22 or later
+- tmux (for manual testing)
 
-## ビルド・テスト
+## Build & Test
 
 ```bash
-make build    # ビルド
-make test     # テスト実行
-make lint     # go vet
+make build    # Build
+make test     # Run tests
+make lint     # Run go vet
 ```
 
-## コーディング規約
+## Coding Guidelines
 
-- `gofmt` でフォーマットすること
-- `go vet` をパスすること
-- 外部ライブラリへの依存は追加しない (標準ライブラリのみ)
+- Format code with `gofmt`
+- Pass `go vet`
+- Do not add external dependencies (standard library only)
 
-## コミットメッセージ
+## Commit Messages
 
-[Conventional Commits](https://www.conventionalcommits.org/) 形式を使用してください:
+Use [Conventional Commits](https://www.conventionalcommits.org/) format:
 
-| Prefix | 用途 |
-|--------|------|
-| `feat:` | 新機能 |
-| `fix:` | バグ修正 |
-| `docs:` | ドキュメント変更 |
-| `refactor:` | リファクタリング |
-| `test:` | テスト追加・修正 |
-| `chore:` | ビルド・CI 等の雑務 |
+| Prefix | Purpose |
+|--------|---------|
+| `feat:` | New feature |
+| `fix:` | Bug fix |
+| `docs:` | Documentation changes |
+| `refactor:` | Refactoring |
+| `test:` | Add or update tests |
+| `chore:` | Build, CI, and other housekeeping |
 
-## Issue
+## Issues
 
-- **バグ報告**: 再現手順、期待動作、実際の動作を記載してください
-- **機能要望**: ユースケースと期待する動作を記載してください
+- **Bug reports**: Include steps to reproduce, expected behavior, and actual behavior
+- **Feature requests**: Describe the use case and expected behavior
 
-## Pull Request
+## Pull Requests
 
-1. `main` ブランチから feature ブランチを作成
-2. 変更を実装し、テストを追加
-3. `make test` と `make lint` がパスすることを確認
-4. `main` ブランチに対して PR を作成
+1. Create a feature branch from `main`
+2. Implement changes and add tests
+3. Ensure `make test` and `make lint` pass
+4. Open a PR against `main`
 
-1つの PR は1つの変更にフォーカスしてください。
+Keep each PR focused on a single change.
