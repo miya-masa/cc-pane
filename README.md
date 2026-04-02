@@ -190,7 +190,10 @@ cc-pane ls --tsv | cut -f2 | sort | uniq -c
 | PostToolUse (ExitPlanMode)         | `approval_waiting` | Plan mode waiting for user approval           |
 | PostToolUse (Agent, bg)            | `running`          | Background agent launched, counter incremented |
 | PermissionRequest                  | `approval_waiting` | Waiting for user to approve a tool            |
+| PreCompact                         | `running`          | Context compaction starting                   |
+| PostCompact                        | `running`          | Context compaction completed                  |
 | Stop                               | `waiting_input`    | Claude stopped, waiting for next input        |
+| Stop (`user_interrupt`)            | `waiting_input`    | User pressed Escape, bg agent count reset     |
 | Stop (bg agents pending)           | `running`          | Background agents still working               |
 | SessionEnd                         | *(file removed)*   | Session ended, state file deleted             |
 | Notification (`permission_prompt`) | `approval_waiting` | Permission prompt notification                |
@@ -212,9 +215,10 @@ When Claude Code dispatches background agents (`Agent` tool with `run_in_backgro
 - **Launch**: PostToolUse with `tool_name: "Agent"` and `tool_input.run_in_background: true` increments the counter
 - **Completion**: Non-permission/idle Notification decrements the counter
 - **Reset**: `UserPromptSubmit` resets the counter (new user turn)
+- **Interrupt reset**: `Stop` with `stop_reason: "user_interrupt"` resets the counter and transitions to `waiting_input`
 - **Safety**: Counter is auto-reset after 30 minutes of no updates
 
-While background agents are pending, `Stop` events keep the state as `running` instead of transitioning to `waiting_input`.
+While background agents are pending, `Stop` events keep the state as `running` instead of transitioning to `waiting_input` (except for `user_interrupt`).
 
 ## Approval Notification
 

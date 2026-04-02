@@ -371,6 +371,32 @@ func TestDetermineState(t *testing.T) {
 			expected: "",
 		},
 		{
+			name:     "PreCompact -> running",
+			event:    "PreCompact",
+			data:     map[string]any{"matcher": "auto"},
+			expected: StateRunning,
+		},
+		{
+			name:     "PostCompact -> running",
+			event:    "PostCompact",
+			data:     map[string]any{"matcher": "manual"},
+			expected: StateRunning,
+		},
+		{
+			name:     "Stop user_interrupt -> waiting_input",
+			event:    "Stop",
+			data:     map[string]any{"stop_reason": "user_interrupt"},
+			existing: nil,
+			expected: StateWaitingInput,
+		},
+		{
+			name:     "Stop user_interrupt with bg agents -> waiting_input",
+			event:    "Stop",
+			data:     map[string]any{"stop_reason": "user_interrupt"},
+			existing: &PaneState{BackgroundAgents: 3},
+			expected: StateWaitingInput,
+		},
+		{
 			name:     "Unknown event -> no change",
 			event:    "SomeNewEvent",
 			data:     nil,
@@ -453,6 +479,44 @@ func TestIsBackgroundAgentLaunch(t *testing.T) {
 			got := isBackgroundAgentLaunch(tt.event, tt.data)
 			if got != tt.expected {
 				t.Errorf("isBackgroundAgentLaunch(%q, data) = %v, want %v", tt.event, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsUserInterrupt(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     map[string]any
+		expected bool
+	}{
+		{
+			name:     "user_interrupt",
+			data:     map[string]any{"stop_reason": "user_interrupt"},
+			expected: true,
+		},
+		{
+			name:     "end_turn",
+			data:     map[string]any{"stop_reason": "end_turn"},
+			expected: false,
+		},
+		{
+			name:     "no stop_reason",
+			data:     map[string]any{},
+			expected: false,
+		},
+		{
+			name:     "nil data",
+			data:     nil,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isUserInterrupt(tt.data)
+			if got != tt.expected {
+				t.Errorf("isUserInterrupt(%v) = %v, want %v", tt.data, got, tt.expected)
 			}
 		})
 	}
@@ -549,6 +613,18 @@ func TestBuildPreview(t *testing.T) {
 			event:    "Stop",
 			data:     map[string]any{},
 			expected: "waiting for input",
+		},
+		{
+			name:     "PreCompact -> compacting context",
+			event:    "PreCompact",
+			data:     map[string]any{},
+			expected: "compacting context",
+		},
+		{
+			name:     "PostCompact -> compaction complete",
+			event:    "PostCompact",
+			data:     map[string]any{},
+			expected: "compaction complete",
 		},
 	}
 

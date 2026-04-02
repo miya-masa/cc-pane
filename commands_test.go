@@ -134,6 +134,32 @@ func TestRemoveHookEntries_CleansNullValues(t *testing.T) {
 	}
 }
 
+func TestMergeHooks_CompactEventsHaveCatchAllMatcher(t *testing.T) {
+	settings := map[string]any{}
+	mergeHooks(settings)
+
+	hooks := settings["hooks"].(map[string]any)
+
+	for _, event := range []string{"Notification", "PreCompact", "PostCompact"} {
+		entries := toSlice(hooks[event])
+		if len(entries) == 0 {
+			t.Fatalf("no entries for %s", event)
+		}
+		entry, ok := entries[0].(map[string]any)
+		if !ok {
+			t.Fatalf("entry for %s is not a map", event)
+		}
+		matcher, exists := entry["matcher"]
+		if !exists {
+			t.Errorf("%s: matcher key not present", event)
+			continue
+		}
+		if matcher != "" {
+			t.Errorf("%s: matcher = %q, want empty string (catch-all)", event, matcher)
+		}
+	}
+}
+
 func TestRemoveHookEntries_NoChangeWhenEmpty(t *testing.T) {
 	hooks := map[string]any{}
 

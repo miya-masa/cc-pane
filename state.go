@@ -230,9 +230,14 @@ func determineState(event string, data map[string]any, existing *PaneState) stri
 			}
 		}
 		return StateRunning
+	case "PreCompact", "PostCompact":
+		return StateRunning
 	case "PermissionRequest":
 		return StateApprovalWaiting
 	case "Stop":
+		if isUserInterrupt(data) {
+			return StateWaitingInput
+		}
 		if hasPendingWork(existing) {
 			return StateRunning
 		}
@@ -280,6 +285,12 @@ func isBackgroundAgentLaunch(event string, data map[string]any) bool {
 	}
 	bg, _ := toolInput["run_in_background"].(bool)
 	return bg
+}
+
+// isUserInterrupt checks if a Stop event was triggered by the user (Escape key).
+func isUserInterrupt(data map[string]any) bool {
+	reason, _ := data["stop_reason"].(string)
+	return reason == "user_interrupt"
 }
 
 // hasPendingWork reports whether the pane has outstanding background work.
@@ -350,6 +361,10 @@ func buildPreview(event string, data map[string]any) string {
 		if toolName, ok := data["tool_name"].(string); ok {
 			return "tool: " + toolName
 		}
+	case "PreCompact":
+		return "compacting context"
+	case "PostCompact":
+		return "compaction complete"
 	case "PermissionRequest":
 		if toolName, ok := data["tool_name"].(string); ok {
 			return "approval: " + toolName

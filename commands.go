@@ -334,6 +334,8 @@ func cmdUpdateState(args []string) error {
 	case *event == "UserPromptSubmit":
 		// New user turn resets background agent tracking
 		bgCount = 0
+	case *event == "Stop" && isUserInterrupt(data):
+		bgCount = 0
 	case isBackgroundAgentLaunch(*event, data):
 		bgCount++
 	case *event == "Notification" && bgCount > 0:
@@ -419,6 +421,8 @@ var requiredHookEvents = []string{
 	"PostToolUse",
 	"PermissionRequest",
 	"Notification",
+	"PreCompact",
+	"PostCompact",
 	"Stop",
 	"SessionEnd",
 }
@@ -584,8 +588,8 @@ func mergeHooks(settings map[string]any) bool {
 				},
 			},
 		}
-		// Notification needs a catch-all matcher
-		if event == "Notification" {
+		// Notification, PreCompact, PostCompact need a catch-all matcher
+		if event == "Notification" || event == "PreCompact" || event == "PostCompact" {
 			hook["matcher"] = ""
 		}
 
