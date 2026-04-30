@@ -263,6 +263,60 @@ func TestMergeCodexHooksWritesBak(t *testing.T) {
 	}
 }
 
+func TestRemoveCodexHooksRemovesBlock(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	content := "[other]\nkey = \"val\"\n" + codexBlockText()
+	if err := os.WriteFile(cfg, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := removeCodexHooks(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("expected changed=true")
+	}
+	got, _ := os.ReadFile(cfg)
+	if strings.Contains(string(got), codexBeginMarker) {
+		t.Errorf("begin marker still present: %s", got)
+	}
+	if !strings.Contains(string(got), `[other]`) {
+		t.Errorf("non-cc-pane content lost: %s", got)
+	}
+}
+
+func TestRemoveCodexHooksMissingEndMarker(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	bad := codexBeginMarker + "\n[[hooks.SessionStart]]\n"
+	if err := os.WriteFile(cfg, []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := removeCodexHooks(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("must not modify when end marker missing")
+	}
+}
+
+func TestRemoveCodexHooksNoBlockExits0(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(cfg, []byte("[other]\nkey=\"val\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := removeCodexHooks(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("no block → not changed")
+	}
+}
+
 func TestFindCodexBlockEdgeCases(t *testing.T) {
 	// 末尾改行なし
 	c := codexBeginMarker + "\nfoo\n" + codexEndMarker

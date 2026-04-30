@@ -221,3 +221,42 @@ func printDryRunDiff(path, block string) {
 		fmt.Println("+ " + line)
 	}
 }
+
+// removeCodexHooks removes the cc-pane managed block from path. Returns
+// (changed, error). If only the begin marker is present (corrupt state),
+// emit a warning and return (false, nil) per spec §6.3.
+func removeCodexHooks(path string) (bool, error) {
+	if err := refuseSymlink(path); err != nil {
+		return false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	content := string(data)
+	beginIdx, endIdx, found := findCodexBlock(content)
+	if !found {
+		if hasOnlyBeginMarker(content) {
+			fmt.Fprintf(os.Stderr, "cc-pane: %s has begin marker but no end marker; refuse to auto-fix.\n", path)
+		}
+		return false, nil
+	}
+
+	if err := os.WriteFile(path+bakSuffix, data, 0o644); err != nil {
+		return false, fmt.Errorf("write bak: %w", err)
+	}
+
+	// Trim a single leading newline that might precede the begin marker
+	// (mergeCodexHooks writes "\n##### cc-pane:begin #####").
+	if beginIdx > 0 && content[beginIdx-1] == '\n' {
+		beginIdx--
+	}
+	newContent := content[:beginIdx] + content[endIdx:]
+	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+	return true, nil
+}
