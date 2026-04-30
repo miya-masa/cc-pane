@@ -333,6 +333,90 @@ func TestFindStateByPaneID(t *testing.T) {
 	}
 }
 
+func TestFindStateByPaneIDMultiHit(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+
+	older := `{"agent":"claude","session":"old","window_index":"0","pane_id":"%1","state":"running","last_updated_at":"2025-01-01T00:00:00Z"}`
+	newer := `{"agent":"codex","session":"new","window_index":"1","pane_id":"%1","state":"waiting_input","last_updated_at":"2026-04-30T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "old__0__1.json"), []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new__1__1.json"), []byte(newer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := findStateByPaneID("%1")
+	if got == nil {
+		t.Fatal("expected hit, got nil")
+	}
+	if got.Session != "new" {
+		t.Errorf("expected newest LastUpdatedAt 'new', got %q", got.Session)
+	}
+}
+
+func TestFindStateByPaneIDForCurrentTmuxPrefersSessionWindow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+
+	stale := `{"agent":"claude","session":"old","window_index":"0","pane_id":"%1","state":"running","last_updated_at":"2026-04-30T10:00:00Z"}`
+	current := `{"agent":"codex","session":"main","window_index":"2","pane_id":"%1","state":"waiting_input","last_updated_at":"2025-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "old__0__1.json"), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main__2__1.json"), []byte(current), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pane := &TmuxPane{Session: "main", WindowIndex: "2", PaneID: "%1"}
+	got := findStateByPaneIDForCurrentTmux(pane)
+	if got == nil {
+		t.Fatal("expected hit, got nil")
+	}
+	if got.Session != "main" {
+		t.Errorf("session/window match should win: got session=%q want main", got.Session)
+	}
+}
+
+func TestFindStateByPaneIDForCurrentTmuxFallsBackToNewest(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+
+	older := `{"agent":"claude","session":"a","window_index":"0","pane_id":"%1","state":"running","last_updated_at":"2025-01-01T00:00:00Z"}`
+	newer := `{"agent":"codex","session":"b","window_index":"1","pane_id":"%1","state":"waiting_input","last_updated_at":"2026-04-30T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "a__0__1.json"), []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b__1__1.json"), []byte(newer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pane := &TmuxPane{Session: "main", WindowIndex: "0", PaneID: "%1"}
+	got := findStateByPaneIDForCurrentTmux(pane)
+	if got == nil || got.Session != "b" {
+		t.Errorf("expected fallback to newest 'b', got %+v", got)
+	}
+}
+
+func TestShouldResetStaleAgentsOnlyForClaude(t *testing.T) {
+	old := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		agent string
+		want  bool
+	}{
+		{AgentClaude, true},
+		{AgentCodex, false},
+		{AgentUnknown, false},
+	}
+	for _, c := range cases {
+		ps := &PaneState{Agent: c.agent, BackgroundAgents: 3, LastUpdatedAt: old}
+		got := shouldResetStaleAgents(ps)
+		if got != c.want {
+			t.Errorf("agent=%s: got %v, want %v", c.agent, got, c.want)
+		}
+	}
+}
+
 func TestDetermineState(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -608,6 +692,7 @@ func TestShouldResetStaleAgents(t *testing.T) {
 
 	// Fresh timestamp should not reset
 	fresh := &PaneState{
+		Agent:            AgentClaude,
 		BackgroundAgents: 1,
 		LastUpdatedAt:    time.Now().Format(time.RFC3339),
 	}
@@ -617,6 +702,7 @@ func TestShouldResetStaleAgents(t *testing.T) {
 
 	// Stale timestamp should reset
 	stale := &PaneState{
+		Agent:            AgentClaude,
 		BackgroundAgents: 1,
 		LastUpdatedAt:    time.Now().Add(-31 * time.Minute).Format(time.RFC3339),
 	}
@@ -626,6 +712,7 @@ func TestShouldResetStaleAgents(t *testing.T) {
 
 	// Invalid timestamp should reset
 	invalid := &PaneState{
+		Agent:            AgentClaude,
 		BackgroundAgents: 1,
 		LastUpdatedAt:    "invalid",
 	}

@@ -197,7 +197,11 @@ func listStates() ([]*PaneState, error) {
 	return states, nil
 }
 
-// findStateByPaneID finds the existing state file for a specific pane.
+// findStateByPaneID returns the state for a specific pane_id. When multiple
+// state files share the same pane_id (tmux can recycle pane ids across
+// sessions), prefer the newest LastUpdatedAt. Used by callers without tmux
+// session/window context (cmdShow / cmdRm). update-state should use
+// findStateByPaneIDForCurrentTmux instead. Spec §5.3.
 func findStateByPaneID(paneID string) *PaneState {
 	dir := stateDir()
 	pattern := filepath.Join(dir, fmt.Sprintf("*__%s.json", sanitizePaneID(paneID)))
@@ -205,11 +209,59 @@ func findStateByPaneID(paneID string) *PaneState {
 	if err != nil || len(matches) == 0 {
 		return nil
 	}
-	ps, err := readState(matches[0])
-	if err != nil {
+	var best *PaneState
+	for _, m := range matches {
+		ps, err := readState(m)
+		if err != nil {
+			continue
+		}
+		if best == nil {
+			best = ps
+			continue
+		}
+		if ps.LastUpdatedAt > best.LastUpdatedAt {
+			best = ps
+		}
+	}
+	return best
+}
+
+// findStateByPaneIDForCurrentTmux is the update-state-aware variant: it
+// prefers state files whose session/window matches the supplied tmux pane,
+// falling back to the newest LastUpdatedAt. Spec §5.3 rule 1 → 2.
+func findStateByPaneIDForCurrentTmux(pane *TmuxPane) *PaneState {
+	if pane == nil {
 		return nil
 	}
-	return ps
+	dir := stateDir()
+	pattern := filepath.Join(dir, fmt.Sprintf("*__%s.json", sanitizePaneID(pane.PaneID)))
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	var best *PaneState
+	var bestExact bool
+	for _, m := range matches {
+		ps, err := readState(m)
+		if err != nil {
+			continue
+		}
+		exact := ps.Session == pane.Session && ps.WindowIndex == pane.WindowIndex
+		if best == nil {
+			best = ps
+			bestExact = exact
+			continue
+		}
+		if exact && !bestExact {
+			best = ps
+			bestExact = true
+			continue
+		}
+		if exact == bestExact && ps.LastUpdatedAt > best.LastUpdatedAt {
+			best = ps
+		}
+	}
+	return best
 }
 
 // cleanStaleStates removes state files for panes that no longer exist.
@@ -334,9 +386,14 @@ func hasPendingWork(ps *PaneState) bool {
 }
 
 // shouldResetStaleAgents returns true if background agent tracking has been
-// stale for longer than backgroundAgentTimeout.
+// stale for longer than backgroundAgentTimeout. Background agents are a
+// claude-only concept (codex / unknown never accumulate the counter), so
+// stale detection only fires on claude states (spec §7.3).
 func shouldResetStaleAgents(ps *PaneState) bool {
 	if ps == nil || ps.BackgroundAgents <= 0 {
+		return false
+	}
+	if ps.Agent != AgentClaude {
 		return false
 	}
 	t, err := time.Parse(time.RFC3339, ps.LastUpdatedAt)
