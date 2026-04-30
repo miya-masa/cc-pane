@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // State constants representing Claude Code session states.
@@ -428,6 +429,95 @@ func cleanupDeadPanes(states []*PaneState, panes []TmuxPane) []*PaneState {
 		result = append(result, ps)
 	}
 	return result
+}
+
+func overlayLiveCodexPanes(states []*PaneState, panes []TmuxPane, now time.Time) []*PaneState {
+	if len(panes) == 0 {
+		return states
+	}
+
+	byPaneID := make(map[string]int, len(states))
+	for i, ps := range states {
+		byPaneID[ps.PaneID] = i
+	}
+
+	for _, pane := range panes {
+		if !isCodexPane(pane) {
+			continue
+		}
+
+		ps := newLiveCodexState(pane, now)
+
+		if idx, ok := byPaneID[pane.PaneID]; ok {
+			mergeExistingLiveCodexState(ps, states[idx], pane)
+			states[idx] = ps
+			continue
+		}
+
+		byPaneID[pane.PaneID] = len(states)
+		states = append(states, ps)
+	}
+
+	sort.Slice(states, func(i, j int) bool {
+		pi := sortPriority(states[i])
+		pj := sortPriority(states[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return states[i].LastUpdatedAt > states[j].LastUpdatedAt
+	})
+
+	return states
+}
+
+func newLiveCodexState(pane TmuxPane, now time.Time) *PaneState {
+	return &PaneState{
+		Agent:         AgentCodex,
+		Session:       pane.Session,
+		WindowIndex:   pane.WindowIndex,
+		WindowName:    pane.WindowName,
+		PaneID:        pane.PaneID,
+		PaneTitle:     pane.PaneTitle,
+		State:         codexLiveState(pane),
+		LastUpdatedAt: now.Format(time.RFC3339),
+		Cwd:           pane.Cwd,
+		Branch:        getGitBranch(pane.Cwd),
+	}
+}
+
+func mergeExistingLiveCodexState(ps, existing *PaneState, pane TmuxPane) {
+	ps.Branch = existing.Branch
+	ps.Preview = existing.Preview
+	if existing.Agent == AgentCodex && existing.State == ps.State {
+		ps.LastUpdatedAt = existing.LastUpdatedAt
+		return
+	}
+	ps.Preview = ""
+	if ps.Branch == "" {
+		ps.Branch = getGitBranch(pane.Cwd)
+	}
+}
+
+func isCodexPane(pane TmuxPane) bool {
+	if pane.CurrentCommand == "codex" {
+		return true
+	}
+	if pane.CurrentCommand == "node" || pane.CurrentCommand == "node-MainThread" {
+		return paneHasCodexProcess(pane.Tty)
+	}
+	return false
+}
+
+func codexLiveState(pane TmuxPane) string {
+	if hasCodexRunningTitle(pane.PaneTitle) {
+		return StateRunning
+	}
+	return StateWaitingInput
+}
+
+func hasCodexRunningTitle(title string) bool {
+	r, _ := utf8.DecodeRuneInString(strings.TrimSpace(title))
+	return r >= '\u2801' && r <= '\u28ff'
 }
 
 // previewMaxLen is the maximum length of preview text before truncation.

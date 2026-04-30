@@ -59,7 +59,7 @@ func applyAgentSwitchReset(prior *PaneState, newAgent string) *PaneState {
 }
 
 func cmdStatus() error {
-	states, err := listStates()
+	states, err := listVisibleStates(false)
 	if err != nil {
 		return err
 	}
@@ -96,11 +96,10 @@ func cmdWatch(args []string) error {
 		fmt.Print("\033[H\033[2J")
 
 		// Header with timestamp and status summary
-		states, err := listStates()
+		states, err := listVisibleStates(true)
 		if err != nil {
 			return err
 		}
-		states = cleanupDeadPanes(states, nil)
 
 		status := formatStatus(states)
 		header := fmt.Sprintf("cc-pane watch (updated %s, every %s)", time.Now().Format("15:04:05"), *interval)
@@ -124,11 +123,10 @@ func cmdLs(args []string) error {
 		return err
 	}
 
-	states, err := listStates()
+	states, err := listVisibleStates(true)
 	if err != nil {
 		return err
 	}
-	states = cleanupDeadPanes(states, nil)
 
 	if *jsonOutput {
 		return renderJSON(states)
@@ -139,6 +137,27 @@ func cmdLs(args []string) error {
 	}
 	renderTable(states, isColorTerminal())
 	return nil
+}
+
+func listVisibleStates(removeDead bool) ([]*PaneState, error) {
+	states, err := listStates()
+	if err != nil {
+		return nil, err
+	}
+
+	panes, err := listAllPanes()
+	if err != nil {
+		if removeDead {
+			states = cleanupDeadPanes(states, nil)
+		}
+		return states, nil
+	}
+
+	states = overlayLiveCodexPanes(states, panes, time.Now())
+	if removeDead {
+		states = cleanupDeadPanes(states, panes)
+	}
+	return states, nil
 }
 
 func cmdJump(args []string) error {

@@ -9,16 +9,17 @@ import (
 
 // TmuxPane holds information about a tmux pane.
 type TmuxPane struct {
-	Session     string
-	WindowIndex string
-	WindowName  string
-	PaneID      string
-	PaneTitle   string
-	Cwd         string
-	Tty         string
+	Session        string
+	WindowIndex    string
+	WindowName     string
+	PaneID         string
+	PaneTitle      string
+	Cwd            string
+	Tty            string
+	CurrentCommand string
 }
 
-const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}\t#{pane_tty}"
+const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}\t#{pane_tty}\t#{pane_current_command}"
 
 // getCurrentPane returns info about the pane identified by $TMUX_PANE.
 func getCurrentPane() (*TmuxPane, error) {
@@ -48,18 +49,19 @@ func getPaneByID(paneID string) (*TmuxPane, error) {
 }
 
 func parseTmuxPaneLine(line string) (*TmuxPane, error) {
-	parts := strings.SplitN(line, "\t", 7)
-	if len(parts) < 7 {
+	parts := strings.SplitN(line, "\t", 8)
+	if len(parts) < 8 {
 		return nil, fmt.Errorf("unexpected tmux output format: %q", line)
 	}
 	return &TmuxPane{
-		Session:     parts[0],
-		WindowIndex: parts[1],
-		WindowName:  parts[2],
-		PaneID:      parts[3],
-		PaneTitle:   parts[4],
-		Cwd:         parts[5],
-		Tty:         parts[6],
+		Session:        parts[0],
+		WindowIndex:    parts[1],
+		WindowName:     parts[2],
+		PaneID:         parts[3],
+		PaneTitle:      parts[4],
+		Cwd:            parts[5],
+		Tty:            parts[6],
+		CurrentCommand: parts[7],
 	}, nil
 }
 
@@ -108,6 +110,39 @@ func getPaneContent(paneID string, lines int) (string, error) {
 		return "", fmt.Errorf("capture-pane %s: %w", paneID, err)
 	}
 	return strings.TrimRight(string(out), "\n"), nil
+}
+
+var paneHasCodexProcess = hasCodexProcessOnTTY
+
+func hasCodexProcessOnTTY(tty string) bool {
+	if tty == "" {
+		return false
+	}
+	tty = strings.TrimPrefix(tty, "/dev/")
+	out, err := exec.Command("ps", "-o", "comm=", "-o", "args=", "-t", tty).Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if looksLikeCodexProcessLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeCodexProcessLine(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	if fields[0] == "codex" {
+		return true
+	}
+	return strings.Contains(line, "/bin/codex") ||
+		strings.Contains(line, "/bin/codex ") ||
+		strings.Contains(line, "/@openai/codex/") ||
+		strings.Contains(line, "@openai/codex")
 }
 
 // getGitBranch returns the current git branch for a directory.

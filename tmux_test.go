@@ -33,3 +33,21 @@ func TestBuildApprovalMessageSanitizesAgent(t *testing.T) {
 		}
 	}
 }
+
+func TestLooksLikeCodexProcessLine(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"codex /path/to/vendor/codex", true},
+		{"node node /home/user/.local/bin/codex", true},
+		{"node node /home/user/.local/lib/node_modules/@openai/codex/bin/codex.js", true},
+		{"node node /home/user/app/server.js", false},
+		{"zsh -zsh", false},
+	}
+	for _, c := range cases {
+		if got := looksLikeCodexProcessLine(c.line); got != c.want {
+			t.Errorf("looksLikeCodexProcessLine(%q) = %v, want %v", c.line, got, c.want)
+		}
+	}
+}
