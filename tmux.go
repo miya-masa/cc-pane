@@ -122,11 +122,27 @@ func getGitBranch(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// buildApprovalMessage constructs the OSC 9 notification payload with a
+// sanitized agent label. Allow-listed values only (spec §10) — unknown or
+// untrusted values fall through to "unknown agent".
+func buildApprovalMessage(agent string) string {
+	var label string
+	switch agent {
+	case AgentClaude:
+		label = "claude"
+	case AgentCodex:
+		label = "codex"
+	default:
+		label = "unknown agent"
+	}
+	return fmt.Sprintf("\033Ptmux;\033\033]9;🔴 cc-pane: %s approval needed\a\033\\", label)
+}
+
 // notifyApproval sends an OSC 9 notification to the pane's terminal via tmux
 // DCS passthrough. This works through SSH with terminal emulators that support
 // OSC 9 (iTerm2, WezTerm, Ghostty, etc.) when tmux allow-passthrough is enabled.
 // Failures are silently ignored (best-effort notification).
-func notifyApproval(pane *TmuxPane) {
+func notifyApproval(pane *TmuxPane, agent string) {
 	if pane.Tty == "" {
 		return
 	}
@@ -135,8 +151,7 @@ func notifyApproval(pane *TmuxPane) {
 		return
 	}
 	defer f.Close()
-	// DCS passthrough wraps OSC 9 so tmux forwards it to the terminal
-	_, _ = f.Write([]byte("\033Ptmux;\033\033]9;🔴 cc-pane: approval needed\a\033\\"))
+	_, _ = f.Write([]byte(buildApprovalMessage(agent)))
 }
 
 // commandVersion returns the version string of a command.

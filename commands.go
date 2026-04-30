@@ -367,9 +367,11 @@ func cmdUpdateState(args []string) error {
 		newState = StateWaitingInput
 	}
 
-	// Notify when transitioning to approval_waiting (best-effort)
+	// Notify when transitioning to approval_waiting (best-effort).
+	// Task 8 will switch this to the per-event --agent value; for now (legacy
+	// callers without the flag) we always notify as claude.
 	if newState == StateApprovalWaiting && (existing == nil || existing.State != StateApprovalWaiting) {
-		notifyApproval(pane)
+		notifyApproval(pane, AgentClaude)
 	}
 
 	// Build preview from event data
