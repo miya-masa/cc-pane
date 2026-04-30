@@ -592,7 +592,7 @@ func cmdSetup(args []string) error {
 	}
 
 	if wantCodex {
-		changed, err := mergeCodexHooks(codexConfigPath(), *dryRun)
+		changed, err := setupCodexHooks(*dryRun)
 		if err != nil {
 			return fmt.Errorf("codex hooks: %w", err)
 		}
@@ -623,6 +623,27 @@ func cmdSetup(args []string) error {
 
 func claudeInstalled() bool {
 	return agentInstalled(claudeSettingsPath(), "claude")
+}
+
+// setupCodexHooks wraps mergeCodexHooks with stdout messages mirroring
+// setupClaudeHooks so users can tell at a glance whether the Codex side ran,
+// already idempotent, or was a dry-run.
+func setupCodexHooks(dryRun bool) (bool, error) {
+	path := codexConfigPath()
+	changed, err := mergeCodexHooks(path, dryRun)
+	if err != nil {
+		return changed, err
+	}
+	if !changed {
+		fmt.Println("  ✓ Codex hooks already configured")
+		return false, nil
+	}
+	if dryRun {
+		fmt.Println("  ~ Would add cc-pane hooks to", path)
+		return true, nil
+	}
+	fmt.Printf("  ✓ Added cc-pane hooks to %s (backup: %s)\n", path, path+bakSuffix)
+	return true, nil
 }
 
 func setupClaudeHooks(dryRun bool) (bool, error) {

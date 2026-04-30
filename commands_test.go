@@ -122,6 +122,53 @@ func TestDoctorHooksJSONInfoOnlyWhenUnmanaged(t *testing.T) {
 	}
 }
 
+func TestSetupPrintsCodexAddedFirstTime(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".codex"))
+	mustWrite(t, filepath.Join(tmp, ".codex", "config.toml"), "")
+
+	out := captureStdout(func() { _ = cmdSetup([]string{"--no-claude"}) })
+	if !strings.Contains(out, "Added cc-pane hooks to") {
+		t.Errorf("expected 'Added cc-pane hooks' in output: %q", out)
+	}
+	if !strings.Contains(out, "config.toml") {
+		t.Errorf("expected config.toml path in output: %q", out)
+	}
+}
+
+func TestSetupPrintsCodexAlreadyConfiguredOnIdempotent(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".codex"))
+	mustWrite(t, filepath.Join(tmp, ".codex", "config.toml"), "")
+
+	// First setup writes the block.
+	if err := cmdSetup([]string{"--no-claude"}); err != nil {
+		t.Fatal(err)
+	}
+	// Second setup should report idempotent status.
+	out := captureStdout(func() { _ = cmdSetup([]string{"--no-claude"}) })
+	if !strings.Contains(out, "Codex hooks already configured") {
+		t.Errorf("expected idempotent status in output: %q", out)
+	}
+}
+
+func TestSetupPrintsCodexDryRun(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".codex"))
+	mustWrite(t, filepath.Join(tmp, ".codex", "config.toml"), "")
+
+	out := captureStdout(func() { _ = cmdSetup([]string{"--no-claude", "--dry-run"}) })
+	if !strings.Contains(out, "Would add cc-pane hooks to") {
+		t.Errorf("expected dry-run message in output: %q", out)
+	}
+}
+
 func TestUninstallRemovesCodexBlock(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
