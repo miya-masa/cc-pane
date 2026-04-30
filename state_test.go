@@ -231,6 +231,12 @@ func TestListStates_SortedByPriority(t *testing.T) {
 }
 
 func TestOverlayLiveCodexPanesAddsMissingCodexState(t *testing.T) {
+	orig := codexProcessStartedAt
+	codexProcessStartedAt = func(tty string, now time.Time) (time.Time, bool) {
+		return now.Add(-5 * time.Minute), true
+	}
+	defer func() { codexProcessStartedAt = orig }()
+
 	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
 	panes := []TmuxPane{
 		{
@@ -240,6 +246,7 @@ func TestOverlayLiveCodexPanesAddsMissingCodexState(t *testing.T) {
 			PaneID:         "%10",
 			PaneTitle:      "Codex",
 			Cwd:            "/repo",
+			Tty:            "/dev/pts/8",
 			CurrentCommand: "codex",
 		},
 	}
@@ -253,6 +260,9 @@ func TestOverlayLiveCodexPanesAddsMissingCodexState(t *testing.T) {
 	}
 	if got[0].State != StateWaitingInput {
 		t.Errorf("State = %q, want %q", got[0].State, StateWaitingInput)
+	}
+	if got[0].LastUpdatedAt != now.Add(-5*time.Minute).Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want process start time", got[0].LastUpdatedAt)
 	}
 }
 

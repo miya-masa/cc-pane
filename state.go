@@ -471,6 +471,10 @@ func overlayLiveCodexPanes(states []*PaneState, panes []TmuxPane, now time.Time)
 }
 
 func newLiveCodexState(pane TmuxPane, now time.Time) *PaneState {
+	lastUpdatedAt := now
+	if startedAt, ok := codexProcessStartedAt(pane.Tty, now); ok {
+		lastUpdatedAt = startedAt
+	}
 	return &PaneState{
 		Agent:         AgentCodex,
 		Session:       pane.Session,
@@ -479,7 +483,7 @@ func newLiveCodexState(pane TmuxPane, now time.Time) *PaneState {
 		PaneID:        pane.PaneID,
 		PaneTitle:     pane.PaneTitle,
 		State:         codexLiveState(pane),
-		LastUpdatedAt: now.Format(time.RFC3339),
+		LastUpdatedAt: lastUpdatedAt.Format(time.RFC3339),
 		Cwd:           pane.Cwd,
 		Branch:        getGitBranch(pane.Cwd),
 	}
