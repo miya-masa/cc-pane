@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -528,37 +529,81 @@ func shellFunctionsPath() string {
 func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	dryRun := fs.Bool("dry-run", false, "show what would be changed without writing")
+	noClaude := fs.Bool("no-claude", false, "skip Claude hook installation")
+	noCodex := fs.Bool("no-codex", false, "skip Codex hook installation")
+	var af agentFlag
+	fs.Var(&af, "agent", "force a specific agent only (claude|codex)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
+	// Input validation phase (spec §6.2.1 priority order).
+	if af.set {
+		if _, err := normalizeAgent(af.value, true); err != nil {
+			return fmt.Errorf("usage: %w", err)
+		}
+		if af.value != AgentClaude && af.value != AgentCodex {
+			return fmt.Errorf("usage: --agent must be 'claude' or 'codex' (got %q)", af.value)
+		}
+		if af.value == AgentClaude && *noClaude {
+			return fmt.Errorf("usage: --agent claude conflicts with --no-claude")
+		}
+		if af.value == AgentCodex && *noCodex {
+			return fmt.Errorf("usage: --agent codex conflicts with --no-codex")
+		}
+	}
+
+	// Determine targets (spec §6.2 step 1-2).
+	wantClaude, wantCodex := false, false
+	if af.set {
+		wantClaude = (af.value == AgentClaude)
+		wantCodex = (af.value == AgentCodex)
+	} else {
+		wantClaude = !*noClaude && claudeInstalled()
+		wantCodex = !*noCodex && codexInstalled()
+	}
+
+	// Forced but not detected → exit 1.
+	if af.set && af.value == AgentClaude && !claudeInstalled() {
+		return fmt.Errorf("Claude not detected; aborting forced setup")
+	}
+	if af.set && af.value == AgentCodex && !codexInstalled() {
+		return fmt.Errorf("Codex not detected; aborting forced setup")
+	}
+
+	if !wantClaude && !wantCodex {
+		fmt.Fprintln(os.Stderr, "cc-pane: warning: no agent targets to set up")
+		return nil
+	}
+
 	anyChange := false
 
-	// 1. Claude Code hooks
-	hooksChanged, err := setupClaudeHooks(*dryRun)
-	if err != nil {
-		return fmt.Errorf("claude hooks: %w", err)
-	}
-	if hooksChanged {
-		anyChange = true
-	}
-
-	// 2. Shell functions
-	shellChanged, err := setupShellFunctions(*dryRun)
-	if err != nil {
-		return fmt.Errorf("shell functions: %w", err)
-	}
-	if shellChanged {
-		anyChange = true
+	if wantClaude {
+		changed, err := setupClaudeHooks(*dryRun)
+		if err != nil {
+			return fmt.Errorf("claude hooks: %w", err)
+		}
+		anyChange = anyChange || changed
 	}
 
-	// 3. tmux keybindings
-	tmuxChanged, err := setupTmuxKeybindings(*dryRun)
-	if err != nil {
-		return fmt.Errorf("tmux config: %w", err)
+	if wantCodex {
+		changed, err := mergeCodexHooks(codexConfigPath(), *dryRun)
+		if err != nil {
+			return fmt.Errorf("codex hooks: %w", err)
+		}
+		anyChange = anyChange || changed
 	}
-	if tmuxChanged {
-		anyChange = true
+
+	if wantClaude || wantCodex {
+		shellChanged, err := setupShellFunctions(*dryRun)
+		if err != nil {
+			return fmt.Errorf("shell functions: %w", err)
+		}
+		tmuxChanged, err := setupTmuxKeybindings(*dryRun)
+		if err != nil {
+			return fmt.Errorf("tmux config: %w", err)
+		}
+		anyChange = anyChange || shellChanged || tmuxChanged
 	}
 
 	if !anyChange {
@@ -566,17 +611,33 @@ func cmdSetup(args []string) error {
 	} else if *dryRun {
 		fmt.Println("\nRun 'cc-pane setup' (without --dry-run) to apply.")
 	} else {
-		fmt.Println("\nSetup complete. Restart Claude Code sessions for hooks to take effect.")
+		fmt.Println("\nSetup complete. Restart agent sessions for hooks to take effect.")
 	}
 	return nil
 }
 
+// claudeInstalled reports whether Claude Code appears to be installed.
+// Mirror of codexInstalled (spec §6.2): the config file or binary on PATH
+// counts; an empty ~/.claude/ alone does not.
+func claudeInstalled() bool {
+	if _, err := os.Stat(claudeSettingsPath()); err == nil {
+		return true
+	}
+	if _, err := exec.LookPath("claude"); err == nil {
+		return true
+	}
+	return false
+}
+
 func setupClaudeHooks(dryRun bool) (bool, error) {
 	path := claudeSettingsPath()
+	if err := refuseSymlink(path); err != nil {
+		return false, err
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Create minimal settings with hooks
 			data = []byte("{}")
 		} else {
 			return false, fmt.Errorf("read %s: %w", path, err)
@@ -599,10 +660,9 @@ func setupClaudeHooks(dryRun bool) (bool, error) {
 		return true, nil
 	}
 
-	// Backup before writing
-	backupPath := path + ".bak"
-	if err := os.WriteFile(backupPath, data, 0o644); err != nil {
-		return false, fmt.Errorf("backup %s: %w", backupPath, err)
+	bakPath := path + bakSuffix
+	if err := os.WriteFile(bakPath, data, 0o644); err != nil {
+		return false, fmt.Errorf("backup %s: %w", bakPath, err)
 	}
 
 	out, err := json.MarshalIndent(settings, "", "  ")
@@ -615,7 +675,7 @@ func setupClaudeHooks(dryRun bool) (bool, error) {
 		return false, fmt.Errorf("write %s: %w", path, err)
 	}
 
-	fmt.Printf("  ✓ Added cc-pane hooks to %s (backup: %s)\n", path, backupPath)
+	fmt.Printf("  ✓ Added cc-pane hooks to %s (backup: %s)\n", path, bakPath)
 	return true, nil
 }
 

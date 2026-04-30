@@ -2,9 +2,83 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func mustMkdir(t *testing.T, p string) {
+	t.Helper()
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustWrite(t *testing.T, p, content string) {
+	t.Helper()
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetupAutoDetectClaudeOnly(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".claude"))
+	mustWrite(t, filepath.Join(tmp, ".claude", "settings.json"), "{}")
+
+	if err := cmdSetup([]string{"--dry-run"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetupAgentMismatchExits2(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	if err := cmdSetup([]string{"--agent", "claude", "--no-claude"}); err == nil {
+		t.Error("expected error (usage)")
+	}
+}
+
+func TestSetupInvalidAgentValueExits2(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	if err := cmdSetup([]string{"--agent", "gemini"}); err == nil {
+		t.Error("expected error for unknown agent value")
+	}
+}
+
+func TestSetupAgentForcedButNotDetectedExits1(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	if err := cmdSetup([]string{"--agent", "codex"}); err == nil {
+		t.Error("expected error when --agent codex but Codex not detected")
+	}
+}
+
+func TestSetupBakFileNamingChanged(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".claude"))
+	settings := filepath.Join(tmp, ".claude", "settings.json")
+	mustWrite(t, settings, "{}")
+
+	if err := cmdSetup([]string{"--no-codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(settings + ".cc-pane.bak"); err != nil {
+		t.Errorf(".cc-pane.bak missing: %v", err)
+	}
+	if _, err := os.Stat(settings + ".bak"); err == nil {
+		t.Errorf("old .bak naming should not be created")
+	}
+}
 
 func TestAgentFlagSetTwiceErrors(t *testing.T) {
 	var af agentFlag
