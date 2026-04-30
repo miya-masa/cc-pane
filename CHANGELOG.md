@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- Support for OpenAI Codex CLI: `cc-pane setup` now also configures `~/.codex/config.toml` hooks.
+- Support for OpenAI Codex CLI: `cc-pane setup` configures the `[notify]` table in `~/.codex/config.toml` so Codex panes appear in `cc-pane ls` after each turn completes (Codex CLI v0.x only exposes turn-end hooks, not per-tool events — see Known Limitations in README).
 - `--agent` flag for `cc-pane update-state` (values: `claude`, `codex`).
 - `AGENT` column in `cc-pane ls` / `cc-pane watch` output (shows `CC` / `CX` / `??`).
 - `agent` field in `--json` output.

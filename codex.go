@@ -44,9 +44,10 @@ func codexInstalled() bool {
 	return agentInstalled(codexConfigPath(), "codex")
 }
 
-// codexHooksConfigured reports whether cc-pane has written its managed hook
-// block to ~/.codex/config.toml AND the block contains at least one cc-pane
-// update-state command line.
+// codexHooksConfigured reports whether cc-pane has written its managed
+// [notify] block in the current canonical form. Legacy [[hooks.X]] blocks
+// from the broken pre-fix builds explicitly do NOT count — doctor must show
+// "not configured" for them so users re-run setup and get the migration.
 func codexHooksConfigured() bool {
 	data, err := os.ReadFile(codexConfigPath())
 	if err != nil {
@@ -56,8 +57,7 @@ func codexHooksConfigured() bool {
 	if !ok {
 		return false
 	}
-	block := string(data)[beginIdx:endIdx]
-	return strings.Contains(block, "cc-pane update-state")
+	return isCurrentCodexBlock(string(data)[beginIdx:endIdx])
 }
 
 // findCodexBlock locates the begin/end marker positions (line-anchored, exact
@@ -86,33 +86,22 @@ func findCodexBlock(content string) (int, int, bool) {
 	return begin, end, true
 }
 
-// codexHookEvents lists Codex hook events cc-pane registers.
-// SessionStart appears first so SessionEnd of a prior agent is followed by the
-// new agent's SessionStart in normal lifecycles.
-var codexHookEvents = []string{
-	"SessionStart",
-	"UserPromptSubmit",
-	"PreToolUse",
-	"PostToolUse",
-	"PermissionRequest",
-	"Notification",
-	"PreCompact",
-	"PostCompact",
-	"Stop",
-	"SessionEnd",
-}
-
 // codexBlockText returns the canonical block written to config.toml.
+//
+// Codex CLI v0.x's interactive mode does NOT support Claude-style per-event
+// hooks ([[hooks.X]] arrays are only honored by the experimental app-server
+// subcommand). The only hook the interactive CLI fires is the legacy [notify]
+// table, which runs once at turn completion. We map that to cc-pane's Stop
+// event so Codex panes at minimum show waiting_input after each turn.
 func codexBlockText() string {
 	var sb strings.Builder
 	sb.WriteString("\n")
 	sb.WriteString(codexBeginMarker + "\n")
-	sb.WriteString("# cc-pane managed hooks. Do not edit between begin/end markers.\n")
-	for _, ev := range codexHookEvents {
-		fmt.Fprintf(&sb, "[[hooks.%s]]\n", ev)
-		fmt.Fprintf(&sb, "command = \"cc-pane update-state --event %s --agent codex\"\n", ev)
-		sb.WriteString("async = true\n\n")
-	}
+	sb.WriteString("# cc-pane managed config. Do not edit between begin/end markers.\n")
+	sb.WriteString("# Codex CLI only fires [notify] on turn completion — cc-pane maps that\n")
+	sb.WriteString("# to a Stop event. See README \"Known Limitations\".\n")
+	sb.WriteString("[notify]\n")
+	sb.WriteString(`command = "cc-pane update-state --event Stop --agent codex"` + "\n")
 	sb.WriteString(codexEndMarker + "\n")
 	return sb.String()
 }
@@ -122,17 +111,19 @@ func codexBlockText() string {
 // switched to a cc-pane-specific suffix.
 const bakSuffix = ".cc-pane.bak"
 
-// mergeCodexHooks ensures the cc-pane managed hook block exists in path.
+// mergeCodexHooks ensures the cc-pane managed config block exists in path.
 // Returns (changed, error). If dryRun is true, no files are written but the
 // proposed addition is printed as a +-prefixed unified diff.
 //
 // Behavior matrix:
-//   - empty / missing file:           write the block, changed=true
-//   - existing file without markers: append block (with newline correction)
-//   - block already present + valid: changed=false (idempotent)
-//   - block present but empty/broken: rewrite, changed=true (warn to stderr)
-//   - begin marker but no end marker: error (refuse to modify)
-//   - target is symlink:              error (refuseSymlink)
+//   - empty / missing file:                        write the block, changed=true
+//   - existing file without markers, no [notify]: append block
+//   - existing file without markers, [notify] set: error (would clash)
+//   - block already present + valid:               changed=false (idempotent)
+//   - block present but legacy [[hooks.X]] form:   rewrite to [notify], changed=true
+//   - block present but empty/broken:              rewrite, changed=true (warn)
+//   - begin marker but no end marker:              error (refuse to modify)
+//   - target is symlink:                           error (refuseSymlink)
 func mergeCodexHooks(path string, dryRun bool) (bool, error) {
 	if err := refuseSymlink(path); err != nil {
 		return false, err
@@ -147,13 +138,21 @@ func mergeCodexHooks(path string, dryRun bool) (bool, error) {
 	beginIdx, endIdx, found := findCodexBlock(content)
 	if found {
 		block := content[beginIdx:endIdx]
-		if strings.Contains(block, "cc-pane update-state") {
+		if isCurrentCodexBlock(block) {
 			return false, nil
 		}
-		fmt.Fprintf(os.Stderr, "cc-pane: rewriting empty/broken cc-pane block in %s\n", path)
+		// Either the legacy [[hooks.X]] form (which codex CLI ignored) or an
+		// empty/broken block — both need a rewrite to the working [notify] form.
+		fmt.Fprintf(os.Stderr, "cc-pane: rewriting cc-pane block in %s (migrating to [notify] form)\n", path)
 		content = content[:beginIdx] + content[endIdx:]
 	} else if hasOnlyBeginMarker(content) {
 		return false, fmt.Errorf("%s contains begin marker but no end marker; refusing to modify (run cc-pane uninstall or fix manually)", path)
+	}
+
+	// Refuse if the user already has their own [notify] table outside our block —
+	// TOML disallows duplicate tables and we don't want to clobber their script.
+	if hasUnmanagedNotifyTable(content) {
+		return false, fmt.Errorf("%s already defines a [notify] table outside the cc-pane block; refusing to add a second one. Remove or merge it manually, then re-run setup", path)
 	}
 
 	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
@@ -180,6 +179,36 @@ func mergeCodexHooks(path string, dryRun bool) (bool, error) {
 		return false, fmt.Errorf("write %s: %w", path, err)
 	}
 	return true, nil
+}
+
+// isCurrentCodexBlock reports whether a marker-bounded block matches the
+// current canonical form (i.e. a [notify] command pointing at cc-pane). Older
+// forms ([[hooks.X]] arrays) return false so they're rewritten on next setup.
+func isCurrentCodexBlock(block string) bool {
+	if !strings.Contains(block, "[notify]") {
+		return false
+	}
+	if !strings.Contains(block, "cc-pane update-state") {
+		return false
+	}
+	if strings.Contains(block, "[[hooks.") {
+		return false
+	}
+	return true
+}
+
+// hasUnmanagedNotifyTable reports whether content (with the cc-pane block
+// already excised) still contains a [notify] table — meaning the user has
+// their own one we'd clash with.
+func hasUnmanagedNotifyTable(content string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if strings.TrimRight(scanner.Text(), " \t\r\n") == "[notify]" {
+			return true
+		}
+	}
+	return false
 }
 
 // hasOnlyBeginMarker returns true when the content has a begin marker but no

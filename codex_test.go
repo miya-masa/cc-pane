@@ -61,8 +61,8 @@ func TestCodexHooksConfigured(t *testing.T) {
 key = "val"
 
 ##### cc-pane:begin #####
-[[hooks.SessionStart]]
-command = "cc-pane update-state --event SessionStart --agent codex"
+[notify]
+command = "cc-pane update-state --event Stop --agent codex"
 ##### cc-pane:end #####
 `
 	if err := os.WriteFile(cfg, []byte(content), 0o644); err != nil {
@@ -85,7 +85,7 @@ command = "cc-pane update-state --event SessionStart --agent codex"
 
 	// only begin (no end) → false
 	noEnd := `##### cc-pane:begin #####
-[[hooks.SessionStart]]
+[notify]
 `
 	if err := os.WriteFile(cfg, []byte(noEnd), 0o644); err != nil {
 		t.Fatal(err)
@@ -110,8 +110,57 @@ func TestMergeCodexHooksEmptyFile(t *testing.T) {
 	if !strings.Contains(string(got), codexBeginMarker) {
 		t.Errorf("missing begin marker: %s", got)
 	}
-	if !strings.Contains(string(got), `command = "cc-pane update-state --event SessionStart --agent codex"`) {
-		t.Errorf("missing SessionStart command: %s", got)
+	if !strings.Contains(string(got), "[notify]") {
+		t.Errorf("missing [notify] table: %s", got)
+	}
+	if !strings.Contains(string(got), `cc-pane update-state --event Stop --agent codex`) {
+		t.Errorf("missing notify command: %s", got)
+	}
+}
+
+func TestMergeCodexHooksMigratesLegacyHooksBlock(t *testing.T) {
+	// Older cc-pane (0.2.0-dev pre-fix) wrote [[hooks.X]] arrays which codex CLI
+	// silently ignores. The new code must rewrite such blocks to [notify] form.
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	legacy := codexBeginMarker + "\n" +
+		"[[hooks.SessionStart]]\n" +
+		`command = "cc-pane update-state --event SessionStart --agent codex"` + "\n" +
+		"async = true\n" +
+		codexEndMarker + "\n"
+	if err := os.WriteFile(cfg, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := mergeCodexHooks(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("expected legacy [[hooks.X]] block to be rewritten")
+	}
+	got, _ := os.ReadFile(cfg)
+	if strings.Contains(string(got), "[[hooks.") {
+		t.Errorf("legacy [[hooks.X]] block still present: %s", got)
+	}
+	if !strings.Contains(string(got), "[notify]") {
+		t.Errorf("[notify] not added after migration: %s", got)
+	}
+}
+
+func TestMergeCodexHooksRefusesExternalNotify(t *testing.T) {
+	// User already has a custom [notify] block outside our markers — refuse to
+	// overwrite, since two [notify] tables would make the TOML invalid and we
+	// don't want to clobber the user's work.
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	existing := "[notify]\ncommand = \"/their/own/script.sh\"\n"
+	if err := os.WriteFile(cfg, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mergeCodexHooks(cfg, false); err == nil {
+		t.Error("expected error when user already has a [notify] block")
 	}
 }
 
@@ -178,7 +227,7 @@ func TestMergeCodexHooksRebuildsBrokenBlock(t *testing.T) {
 func TestMergeCodexHooksMissingEndMarkerAborts(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := filepath.Join(tmp, "config.toml")
-	bad := codexBeginMarker + "\n[[hooks.SessionStart]]\n"
+	bad := codexBeginMarker + "\n[notify]\n"
 	if err := os.WriteFile(cfg, []byte(bad), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +338,7 @@ func TestRemoveCodexHooksRemovesBlock(t *testing.T) {
 func TestRemoveCodexHooksMissingEndMarker(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := filepath.Join(tmp, "config.toml")
-	bad := codexBeginMarker + "\n[[hooks.SessionStart]]\n"
+	bad := codexBeginMarker + "\n[notify]\n"
 	if err := os.WriteFile(cfg, []byte(bad), 0o644); err != nil {
 		t.Fatal(err)
 	}
