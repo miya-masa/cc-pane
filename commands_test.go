@@ -6,6 +6,54 @@ import (
 	"testing"
 )
 
+func TestAgentFlagSetTwiceErrors(t *testing.T) {
+	var af agentFlag
+	if err := af.Set("claude"); err != nil {
+		t.Fatal(err)
+	}
+	if err := af.Set("codex"); err == nil {
+		t.Error("expected error on duplicate Set")
+	}
+}
+
+func TestApplyAgentSwitchReset(t *testing.T) {
+	prior := &PaneState{
+		Agent: AgentClaude, Session: "s", WindowIndex: "0", PaneID: "%99",
+		State: StateRunning, BackgroundAgents: 5, Preview: "old preview",
+	}
+	pane := &TmuxPane{Session: "s", WindowIndex: "0", PaneID: "%99", Cwd: "/tmp", WindowName: "w"}
+	got := applyAgentSwitchReset(prior, AgentCodex, pane)
+	if got.BackgroundAgents != 0 {
+		t.Errorf("BG counter not reset: %d", got.BackgroundAgents)
+	}
+	if got.Agent != AgentCodex {
+		t.Errorf("Agent not switched: %s", got.Agent)
+	}
+	if got.Preview != "" {
+		t.Errorf("Preview not cleared: %q", got.Preview)
+	}
+}
+
+func TestMergeHooksIncludesAgentFlag(t *testing.T) {
+	settings := map[string]any{}
+	if !mergeHooks(settings) {
+		t.Fatal("mergeHooks should report changes")
+	}
+	hooks := settings["hooks"].(map[string]any)
+	for _, event := range requiredHookEvents {
+		entries := toSlice(hooks[event])
+		if len(entries) == 0 {
+			t.Fatalf("no entries for %s", event)
+		}
+		entry := entries[0].(map[string]any)
+		inner := entry["hooks"].([]any)[0].(map[string]any)
+		cmd, _ := inner["command"].(string)
+		if !strings.Contains(cmd, "--agent claude") {
+			t.Errorf("event %s: command missing --agent claude: %q", event, cmd)
+		}
+	}
+}
+
 func TestMergeHooks_CleansNullValues(t *testing.T) {
 	settings := map[string]any{
 		"hooks": map[string]any{

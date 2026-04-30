@@ -14,13 +14,64 @@ import (
 )
 
 // hooksConfigured checks if cc-pane hooks are present in Claude Code settings.
+//
+// Deprecated: use claudeHooksConfigured. Retained as an alias for the in-repo
+// callers; renamed in cmdDoctor (Task 11) and ui.go.
 func hooksConfigured() bool {
+	return claudeHooksConfigured()
+}
+
+// claudeHooksConfigured reports whether cc-pane hook entries exist in
+// ~/.claude/settings.json. Same substring marker strategy as before
+// (spec §6.2.2 explicitly preserves Claude-side legacy detection).
+func claudeHooksConfigured() bool {
 	home, _ := os.UserHomeDir()
 	data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	if err != nil {
 		return false
 	}
 	return strings.Contains(string(data), "cc-pane")
+}
+
+// agentFlag is a flag.Value implementation that detects duplicate --agent
+// invocations and tracks whether the flag was actually supplied. Spec §6.1
+// distinguishes "absent flag" (legacy claude fallback) from "--agent ”"
+// (usage error) so we cannot use the default flag.String API here.
+type agentFlag struct {
+	set   bool
+	value string
+}
+
+func (a *agentFlag) String() string { return a.value }
+func (a *agentFlag) Set(v string) error {
+	if a.set {
+		return fmt.Errorf("--agent specified more than once")
+	}
+	a.set = true
+	a.value = v
+	return nil
+}
+
+// applyAgentSwitchReset performs the agent-change pre-processing described in
+// spec §7.3. It returns a *new* PaneState with reset fields applied so callers
+// may mutate further before writeState. Background-agent counter and preview
+// are cleared because those concepts do not carry across agents.
+func applyAgentSwitchReset(prior *PaneState, newAgent string, pane *TmuxPane) *PaneState {
+	out := *prior
+	out.Agent = newAgent
+	out.BackgroundAgents = 0
+	out.Preview = ""
+	out.LastUpdatedAt = time.Now().Format(time.RFC3339)
+	if pane != nil {
+		out.Session = pane.Session
+		out.WindowIndex = pane.WindowIndex
+		out.WindowName = pane.WindowName
+		out.PaneID = pane.PaneID
+		out.PaneTitle = pane.PaneTitle
+		out.Cwd = pane.Cwd
+		out.Branch = getGitBranch(pane.Cwd)
+	}
+	return &out
 }
 
 func cmdStatus() error {
@@ -285,117 +336,122 @@ func cmdDoctor() error {
 }
 
 func cmdUpdateState(args []string) error {
+	// Step 1: parse flags + validate --agent before any side effects.
 	fs := flag.NewFlagSet("update-state", flag.ContinueOnError)
 	event := fs.String("event", "", "hook event type")
+	var af agentFlag
+	fs.Var(&af, "agent", "agent name (claude|codex)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	if *event == "" {
 		return fmt.Errorf("--event is required")
 	}
+	agent, err := normalizeAgent(af.value, af.set)
+	if err != nil {
+		return err
+	}
 
-	// Read event data from stdin (piped by Claude Code hooks)
+	// Step 2: hook payload from stdin (best-effort JSON).
 	eventData, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
 	}
-
 	var data map[string]any
 	if len(eventData) > 0 {
-		_ = json.Unmarshal(eventData, &data) // best-effort; stdin may be empty
+		_ = json.Unmarshal(eventData, &data)
 	}
 
-	// Get current tmux pane context
+	// Step 3: tmux pane context (failure leaves state untouched).
 	pane, err := getCurrentPane()
 	if err != nil {
 		return fmt.Errorf("get pane info: %w", err)
 	}
 
-	// SessionEnd: remove state file and exit
+	// Step 4: SessionEnd is the special case from spec §8 — only delete when
+	// the existing state belongs to this agent (or is missing entirely).
 	if *event == "SessionEnd" {
-		existing := findStateByPaneID(pane.PaneID)
-		if existing != nil {
-			path := stateFilePath(existing.Session, existing.WindowIndex, existing.PaneID)
-			os.Remove(path)
+		existing := findStateByPaneIDForCurrentTmux(pane)
+		if existing == nil || existing.Agent == agent {
+			if existing != nil {
+				path := stateFilePath(existing.Session, existing.WindowIndex, existing.PaneID)
+				if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
+					fmt.Fprintf(os.Stderr, "cc-pane: warn: remove %s: %v\n", path, rerr)
+				}
+			}
 		}
 		return nil
 	}
 
-	// Read existing state once for fallback values (branch cache, preview, bg agents)
-	existing := findStateByPaneID(pane.PaneID)
+	// Step 5: prior + agent-switch pre-processing (spec §7.3).
+	prior := findStateByPaneIDForCurrentTmux(pane)
+	if prior != nil && prior.Agent != agent {
+		prior = applyAgentSwitchReset(prior, agent, pane)
+	}
 
-	// Compute background agent count (reset if stale)
+	// Step 6: bg counter — only claude maintains it.
 	bgCount := 0
-	if existing != nil && !shouldResetStaleAgents(existing) {
-		bgCount = existing.BackgroundAgents
+	if prior != nil && !shouldResetStaleAgents(prior) {
+		bgCount = prior.BackgroundAgents
 	}
-	switch {
-	case *event == "UserPromptSubmit":
-		// New user turn resets background agent tracking
-		bgCount = 0
-	case *event == "Stop" && isUserInterrupt(data):
-		bgCount = 0
-	case isBackgroundAgentLaunch(*event, data):
-		bgCount++
-	case *event == "Notification" && bgCount > 0:
-		// Non-permission/idle notification while agents pending = potential completion
-		nt, _ := data["notification_type"].(string)
-		if nt != "permission_prompt" && nt != "idle_prompt" {
-			bgCount--
+	if agent == AgentClaude {
+		switch {
+		case *event == "UserPromptSubmit":
+			bgCount = 0
+		case *event == "Stop" && isUserInterrupt(data):
+			bgCount = 0
+		case isBackgroundAgentLaunch(*event, data):
+			bgCount++
+		case *event == "Notification" && bgCount > 0:
+			nt, _ := data["notification_type"].(string)
+			if nt != "permission_prompt" && nt != "idle_prompt" {
+				bgCount--
+			}
 		}
-	}
-	if bgCount < 0 {
+		if bgCount < 0 {
+			bgCount = 0
+		}
+	} else {
 		bgCount = 0
 	}
 
-	// Determine new state from event (considering pending background work)
-	newState := determineState(*event, data, existing)
+	// Step 7: state determination + fall-through / approval / preview / branch.
+	newState := determineState(*event, data, prior)
 
-	// Persist bgCount change even when event doesn't trigger a state transition
-	// (e.g., agent completion notification with unknown type)
-	if newState == "" && existing != nil && bgCount != existing.BackgroundAgents {
-		newState = existing.State
+	if newState == "" && prior != nil && bgCount != prior.BackgroundAgents {
+		newState = prior.State
 	}
-
 	if newState == "" {
-		return nil // no state change (e.g., unrecognized Notification)
+		return nil
 	}
 
-	// If last background agent just completed, transition to waiting_input
-	if bgCount == 0 && hasPendingWork(existing) && newState == StateRunning {
+	if bgCount == 0 && hasPendingWork(prior) && newState == StateRunning {
 		newState = StateWaitingInput
 	}
 
-	// Notify when transitioning to approval_waiting (best-effort).
-	// Task 8 will switch this to the per-event --agent value; for now (legacy
-	// callers without the flag) we always notify as claude.
-	if newState == StateApprovalWaiting && (existing == nil || existing.State != StateApprovalWaiting) {
-		notifyApproval(pane, AgentClaude)
+	if newState == StateApprovalWaiting && (prior == nil || prior.State != StateApprovalWaiting) {
+		notifyApproval(pane, agent)
 	}
 
-	// Build preview from event data
 	preview := buildPreview(*event, data)
-
-	if preview == "" && existing != nil {
-		preview = existing.Preview
+	if preview == "" && prior != nil {
+		preview = prior.Preview
 	}
-
-	// Override preview when background agents are running after Stop
 	if *event == "Stop" && bgCount > 0 {
 		preview = fmt.Sprintf("bg agents: %d running", bgCount)
 	}
 
-	// Reuse cached branch to avoid spawning git on every hook event
 	branch := ""
-	if existing != nil {
-		branch = existing.Branch
+	if prior != nil {
+		branch = prior.Branch
 	}
 	if branch == "" {
 		branch = getGitBranch(pane.Cwd)
 	}
 
+	// Step 8: write the new state (Agent must be set).
 	ps := &PaneState{
+		Agent:            agent,
 		Session:          pane.Session,
 		WindowIndex:      pane.WindowIndex,
 		WindowName:       pane.WindowName,
@@ -407,7 +463,6 @@ func cmdUpdateState(args []string) error {
 		Preview:          preview,
 		BackgroundAgents: bgCount,
 	}
-
 	return writeState(ps)
 }
 
@@ -585,7 +640,7 @@ func mergeHooks(settings map[string]any) bool {
 			"hooks": []any{
 				map[string]any{
 					"type":    "command",
-					"command": fmt.Sprintf("cc-pane update-state --event %s", event),
+					"command": fmt.Sprintf("cc-pane update-state --event %s --agent claude", event),
 					"async":   true,
 				},
 			},
