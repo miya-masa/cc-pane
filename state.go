@@ -18,8 +18,16 @@ const (
 	StateApprovalWaiting = "approval_waiting"
 )
 
-// PaneState represents the tracked state of a Claude Code session in a tmux pane.
+// Agent constants identifying which CLI is being tracked.
+const (
+	AgentClaude  = "claude"
+	AgentCodex   = "codex"
+	AgentUnknown = "unknown"
+)
+
+// PaneState represents the tracked state of an agent session in a tmux pane.
 type PaneState struct {
+	Agent            string `json:"agent"`
 	Session          string `json:"session"`
 	WindowIndex      string `json:"window_index"`
 	WindowName       string `json:"window_name"`
@@ -31,6 +39,24 @@ type PaneState struct {
 	Branch           string `json:"branch,omitempty"`
 	Preview          string `json:"preview,omitempty"`
 	BackgroundAgents int    `json:"background_agents,omitempty"`
+}
+
+// normalizeAgent applies the agent normalization rules (spec §5.1 / §6.1).
+// flagPresent indicates whether --agent was actually supplied on the command
+// line. When the flag is absent the call defaults to claude (legacy behavior).
+// An empty value with flagPresent=true is a usage error.
+func normalizeAgent(raw string, flagPresent bool) (string, error) {
+	if !flagPresent {
+		return AgentClaude, nil
+	}
+	switch raw {
+	case AgentClaude, AgentCodex:
+		return raw, nil
+	case "":
+		return "", fmt.Errorf("--agent value cannot be empty")
+	default:
+		return AgentUnknown, nil
+	}
 }
 
 // StatePriority returns display priority (lower = higher priority).
@@ -101,6 +127,12 @@ func stateFilePath(session, windowIndex, paneID string) string {
 }
 
 func writeState(ps *PaneState) error {
+	if ps.Agent == "" {
+		return fmt.Errorf("writeState: Agent field is empty (bug)")
+	}
+	if ps.Agent != AgentClaude && ps.Agent != AgentCodex && ps.Agent != AgentUnknown {
+		return fmt.Errorf("writeState: invalid Agent %q", ps.Agent)
+	}
 	if err := ensureStateDir(); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
@@ -124,6 +156,9 @@ func readState(path string) (*PaneState, error) {
 	var ps PaneState
 	if err := json.Unmarshal(data, &ps); err != nil {
 		return nil, fmt.Errorf("unmarshal %s: %w", filepath.Base(path), err)
+	}
+	if ps.Agent == "" {
+		ps.Agent = AgentClaude // legacy fallback (spec §5.2)
 	}
 	return &ps, nil
 }

@@ -8,6 +8,68 @@ import (
 	"time"
 )
 
+func TestNormalizeAgent(t *testing.T) {
+	tests := []struct {
+		name        string
+		raw         string
+		flagPresent bool
+		want        string
+		wantErr     bool
+	}{
+		{"flag absent → claude fallback", "", false, AgentClaude, false},
+		{"explicit claude", "claude", true, AgentClaude, false},
+		{"explicit codex", "codex", true, AgentCodex, false},
+		{"unknown value → unknown literal", "gemini", true, AgentUnknown, false},
+		{"uppercase Claude → unknown", "Claude", true, AgentUnknown, false},
+		{"empty value with flag present → error", "", true, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeAgent(tt.raw, tt.flagPresent)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("normalizeAgent(%q, %v) err=%v wantErr=%v", tt.raw, tt.flagPresent, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("normalizeAgent(%q, %v) = %q, want %q", tt.raw, tt.flagPresent, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPaneStateAgentRoundTrip(t *testing.T) {
+	t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+	ps := &PaneState{Agent: AgentCodex, Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning}
+	if err := writeState(ps); err != nil {
+		t.Fatal(err)
+	}
+	got := findStateByPaneID("%1")
+	if got == nil || got.Agent != AgentCodex {
+		t.Errorf("agent round-trip failed: %+v", got)
+	}
+}
+
+func TestReadStateLegacyAgentFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+	// 旧形式: agent フィールドなし
+	legacy := `{"session":"s","window_index":"0","pane_id":"%1","state":"running","last_updated_at":"2026-04-30T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "s__0__1.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := findStateByPaneID("%1")
+	if got == nil || got.Agent != AgentClaude {
+		t.Errorf("legacy fallback failed: %+v", got)
+	}
+}
+
+func TestWriteStateRejectsEmptyAgent(t *testing.T) {
+	t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+	ps := &PaneState{Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning}
+	if err := writeState(ps); err == nil {
+		t.Error("expected error when Agent is empty")
+	}
+}
+
 func TestStatePriority(t *testing.T) {
 	tests := []struct {
 		state    string
@@ -91,6 +153,7 @@ func TestWriteAndReadState(t *testing.T) {
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
 
 	ps := &PaneState{
+		Agent:       AgentClaude,
 		Session:     "main",
 		WindowIndex: "0",
 		WindowName:  "dev",
@@ -140,9 +203,9 @@ func TestListStates_SortedByPriority(t *testing.T) {
 
 	// Write states in non-priority order
 	states := []*PaneState{
-		{Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "1", PaneID: "%2", State: StateApprovalWaiting, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "2", PaneID: "%3", State: StateWaitingInput, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "1", PaneID: "%2", State: StateApprovalWaiting, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "2", PaneID: "%3", State: StateWaitingInput, Cwd: "/tmp"},
 	}
 
 	for _, ps := range states {
@@ -197,9 +260,9 @@ func TestCleanStaleStates(t *testing.T) {
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
 
 	states := []*PaneState{
-		{Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "1", PaneID: "%2", State: StateWaitingInput, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "2", PaneID: "%3", State: StateApprovalWaiting, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "1", PaneID: "%2", State: StateWaitingInput, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "2", PaneID: "%3", State: StateApprovalWaiting, Cwd: "/tmp"},
 	}
 	for _, ps := range states {
 		writeState(ps)
@@ -246,6 +309,7 @@ func TestFindStateByPaneID(t *testing.T) {
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
 
 	ps := &PaneState{
+		Agent:       AgentClaude,
 		Session:     "main",
 		WindowIndex: "0",
 		PaneID:      "%42",
@@ -648,6 +712,7 @@ func TestWriteState_JSONRoundtrip(t *testing.T) {
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
 
 	ps := &PaneState{
+		Agent:       AgentClaude,
 		Session:     "work",
 		WindowIndex: "1",
 		WindowName:  "editor",
