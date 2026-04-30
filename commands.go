@@ -871,22 +871,19 @@ func cmdUninstall(args []string) error {
 		return err
 	}
 
-	// 1. Remove hooks from settings.json
 	if err := uninstallClaudeHooks(); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! claude hooks: %v\n", err)
 	}
-
-	// 2. Remove shell functions
+	if _, err := removeCodexHooks(codexConfigPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! codex hooks: %v\n", err)
+	}
 	if err := uninstallShellFunctions(); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! shell functions: %v\n", err)
 	}
-
-	// 3. Remove tmux keybindings
 	if err := uninstallTmuxKeybindings(); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! tmux config: %v\n", err)
 	}
 
-	// 4. Optionally remove state directory
 	if *purge {
 		dir := stateDir()
 		if err := os.RemoveAll(dir); err != nil {
@@ -896,7 +893,6 @@ func cmdUninstall(args []string) error {
 		}
 	}
 
-	// Check if source line remains in shell rc
 	for _, rcPath := range shellRcPaths() {
 		data, err := os.ReadFile(rcPath)
 		if err != nil {
@@ -950,39 +946,49 @@ func removeHookEntries(hooks map[string]any) bool {
 
 func uninstallClaudeHooks() error {
 	path := claudeSettingsPath()
+	if err := refuseSymlink(path); err != nil {
+		return err
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", path, err)
 	}
 
 	var settings map[string]any
 	if err := json.Unmarshal(data, &settings); err != nil {
-		return err
+		return fmt.Errorf("parse %s: %w", path, err)
 	}
 
-	hooks, ok := settings["hooks"].(map[string]any)
-	if !ok {
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
 		fmt.Println("  ✓ No hooks to remove")
 		return nil
 	}
 
-	changed := removeHookEntries(hooks)
-
-	if !changed {
+	if !removeHookEntries(hooks) {
 		fmt.Println("  ✓ No cc-pane hooks found")
 		return nil
 	}
 
+	bakPath := path + bakSuffix
+	if err := os.WriteFile(bakPath, data, 0o644); err != nil {
+		return fmt.Errorf("backup %s: %w", bakPath, err)
+	}
+
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal settings: %w", err)
 	}
 	out = append(out, '\n')
 
 	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return err
+		return fmt.Errorf("write %s: %w", path, err)
 	}
-	fmt.Printf("  ✓ Removed cc-pane hooks from %s\n", path)
+	fmt.Printf("  ✓ Removed cc-pane hooks from %s (backup: %s)\n", path, bakPath)
 	return nil
 }
 

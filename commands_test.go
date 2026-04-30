@@ -80,6 +80,35 @@ func TestSetupBakFileNamingChanged(t *testing.T) {
 	}
 }
 
+func TestUninstallRemovesCodexBlock(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	codexDir := filepath.Join(tmp, ".codex")
+	mustMkdir(t, codexDir)
+	cfg := filepath.Join(codexDir, "config.toml")
+	mustWrite(t, cfg, "[other]\n"+codexBlockText())
+
+	if err := cmdUninstall([]string{}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(cfg)
+	if strings.Contains(string(got), codexBeginMarker) {
+		t.Errorf("Codex block not removed: %s", got)
+	}
+}
+
+func TestUninstallSurvivesPartialFailure(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".claude"))
+	mustWrite(t, filepath.Join(tmp, ".claude", "settings.json"), `{"hooks":{}}`)
+	if err := cmdUninstall([]string{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAgentFlagSetTwiceErrors(t *testing.T) {
 	var af agentFlag
 	if err := af.Set("claude"); err != nil {
