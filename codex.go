@@ -112,3 +112,112 @@ func codexBlockText() string {
 	sb.WriteString(codexEndMarker + "\n")
 	return sb.String()
 }
+
+// bakSuffix is the suffix used for backup files created by setup/uninstall
+// (spec §7.2 step 5). The previous .bak naming risked clobbering user-managed
+// backups, so 0.2.0 switched to a cc-pane-specific suffix.
+const bakSuffix = ".cc-pane.bak"
+
+// mergeCodexHooks ensures the cc-pane managed hook block exists in path.
+// Returns (changed, error). If dryRun is true, no files are written but the
+// proposed addition is printed as a +-prefixed unified diff (spec §7.2 step 7).
+//
+// Behavior matrix:
+//   - empty / missing file:           write the block, changed=true
+//   - existing file without markers: append block (with newline correction)
+//   - block already present + valid: changed=false (idempotent)
+//   - block present but empty/broken: rewrite, changed=true (warn to stderr)
+//   - begin marker but no end marker: error (refuse to modify)
+//   - target is symlink:              error (spec §7.2 step 6)
+func mergeCodexHooks(path string, dryRun bool) (bool, error) {
+	if err := refuseSymlink(path); err != nil {
+		return false, err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	content := string(data)
+
+	beginIdx, endIdx, found := findCodexBlock(content)
+	if found {
+		block := content[beginIdx:endIdx]
+		if strings.Contains(block, "cc-pane update-state") {
+			return false, nil
+		}
+		fmt.Fprintf(os.Stderr, "cc-pane: rewriting empty/broken cc-pane block in %s\n", path)
+		content = content[:beginIdx] + content[endIdx:]
+	} else if hasOnlyBeginMarker(content) {
+		return false, fmt.Errorf("%s contains begin marker but no end marker; refusing to modify (run cc-pane uninstall or fix manually)", path)
+	}
+
+	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
+		content += "\n"
+	}
+	newContent := content + codexBlockText()
+
+	if dryRun {
+		printDryRunDiff(path, codexBlockText())
+		return true, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return false, fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	}
+
+	if data != nil {
+		if err := os.WriteFile(path+bakSuffix, data, 0o644); err != nil {
+			return false, fmt.Errorf("write bak: %w", err)
+		}
+	}
+
+	if err := os.WriteFile(path, []byte(newContent), 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// hasOnlyBeginMarker returns true when the content has a begin marker but no
+// matching end marker — a corrupt state we refuse to auto-repair.
+func hasOnlyBeginMarker(content string) bool {
+	scanner := bufio.NewScanner(strings.NewReader(content))
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	hasBegin := false
+	hasEnd := false
+	for scanner.Scan() {
+		trimmed := strings.TrimRight(scanner.Text(), " \t\r\n")
+		if trimmed == codexBeginMarker {
+			hasBegin = true
+		}
+		if trimmed == codexEndMarker {
+			hasEnd = true
+		}
+	}
+	return hasBegin && !hasEnd
+}
+
+// refuseSymlink returns an error when path is a symlink (spec §7.2 step 6).
+// A missing path is OK (we will create the file).
+func refuseSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("lstat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink; refuse to overwrite. Remove the symlink or run cc-pane uninstall first", path)
+	}
+	return nil
+}
+
+// printDryRunDiff outputs the proposed block as a +-prefixed unified diff style
+// (spec §7.2 step 7).
+func printDryRunDiff(path, block string) {
+	fmt.Println(path)
+	for _, line := range strings.Split(strings.TrimSuffix(block, "\n"), "\n") {
+		fmt.Println("+ " + line)
+	}
+}

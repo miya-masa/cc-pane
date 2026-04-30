@@ -95,6 +95,174 @@ command = "cc-pane update-state --event SessionStart --agent codex"
 	}
 }
 
+func TestMergeCodexHooksEmptyFile(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+
+	changed, err := mergeCodexHooks(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("expected changed=true on empty file")
+	}
+	got, _ := os.ReadFile(cfg)
+	if !strings.Contains(string(got), codexBeginMarker) {
+		t.Errorf("missing begin marker: %s", got)
+	}
+	if !strings.Contains(string(got), `command = "cc-pane update-state --event SessionStart --agent codex"`) {
+		t.Errorf("missing SessionStart command: %s", got)
+	}
+}
+
+func TestMergeCodexHooksPreservesExisting(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	existing := "[other]\nkey = \"val\"\n"
+	if err := os.WriteFile(cfg, []byte(existing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := mergeCodexHooks(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(cfg)
+	if !strings.Contains(string(got), `[other]`) {
+		t.Errorf("existing content lost: %s", got)
+	}
+}
+
+func TestMergeCodexHooksIdempotent(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+
+	if _, err := mergeCodexHooks(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := os.ReadFile(cfg)
+
+	changed, err := mergeCodexHooks(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Error("second call should be idempotent (changed=false)")
+	}
+	second, _ := os.ReadFile(cfg)
+	if string(first) != string(second) {
+		t.Error("file changed on idempotent call")
+	}
+}
+
+func TestMergeCodexHooksRebuildsBrokenBlock(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	broken := codexBeginMarker + "\n" + codexEndMarker + "\n"
+	if err := os.WriteFile(cfg, []byte(broken), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := mergeCodexHooks(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("broken block should be rebuilt (changed=true)")
+	}
+	got, _ := os.ReadFile(cfg)
+	if !strings.Contains(string(got), `command = "cc-pane update-state`) {
+		t.Errorf("rebuild failed: %s", got)
+	}
+}
+
+func TestMergeCodexHooksMissingEndMarkerAborts(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	bad := codexBeginMarker + "\n[[hooks.SessionStart]]\n"
+	if err := os.WriteFile(cfg, []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mergeCodexHooks(cfg, false); err == nil {
+		t.Error("expected error on missing end marker")
+	}
+}
+
+func TestMergeCodexHooksAppendsNewlineWhenNeeded(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	noTrailingNL := `key = "val"`
+	if err := os.WriteFile(cfg, []byte(noTrailingNL), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mergeCodexHooks(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(cfg)
+	if strings.Contains(string(got), `"val"##### cc-pane`) {
+		t.Errorf("line concatenation: %q", got)
+	}
+}
+
+func TestMergeCodexHooksDryRun(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	if _, err := mergeCodexHooks(cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cfg); !os.IsNotExist(err) {
+		t.Error("dry-run must not create the file")
+	}
+}
+
+func TestMergeCodexHooksRefusesSymlink(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "real.toml")
+	link := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(target, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mergeCodexHooks(link, false); err == nil {
+		t.Error("expected error when target is a symlink")
+	}
+}
+
+func TestMergeCodexHooksCreatesParentDir(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "subdir", "config.toml")
+	if _, err := mergeCodexHooks(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Dir(cfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("expected 0700, got %o", info.Mode().Perm())
+	}
+}
+
+func TestMergeCodexHooksWritesBak(t *testing.T) {
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	if err := os.WriteFile(cfg, []byte("# original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mergeCodexHooks(cfg, false); err != nil {
+		t.Fatal(err)
+	}
+	bak := cfg + ".cc-pane.bak"
+	got, err := os.ReadFile(bak)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "# original\n" {
+		t.Errorf("bak content: %q", got)
+	}
+}
+
 func TestFindCodexBlockEdgeCases(t *testing.T) {
 	// 末尾改行なし
 	c := codexBeginMarker + "\nfoo\n" + codexEndMarker
