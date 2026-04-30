@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
-	"time"
 )
 
 // TmuxPane holds information about a tmux pane.
@@ -118,8 +116,6 @@ var paneHasCodexProcess = hasCodexProcessOnTTY
 
 var paneHasCodexApprovalPrompt = hasCodexApprovalPromptInPane
 
-var codexProcessStartedAt = detectCodexProcessStartedAtOnTTY
-
 func hasCodexProcessOnTTY(tty string) bool {
 	if tty == "" {
 		return false
@@ -149,48 +145,6 @@ func looksLikeCodexProcessLine(line string) bool {
 		strings.Contains(line, "/bin/codex ") ||
 		strings.Contains(line, "/@openai/codex/") ||
 		strings.Contains(line, "@openai/codex")
-}
-
-func detectCodexProcessStartedAtOnTTY(tty string, now time.Time) (time.Time, bool) {
-	if tty == "" {
-		return time.Time{}, false
-	}
-	tty = strings.TrimPrefix(tty, "/dev/")
-	out, err := exec.Command("ps", "-o", "etimes=", "-o", "comm=", "-o", "args=", "-t", tty).Output()
-	if err != nil {
-		return time.Time{}, false
-	}
-
-	var oldest time.Time
-	for _, line := range strings.Split(string(out), "\n") {
-		startedAt, ok := parseCodexProcessStartedAt(line, now)
-		if !ok {
-			continue
-		}
-		if oldest.IsZero() || startedAt.Before(oldest) {
-			oldest = startedAt
-		}
-	}
-	if oldest.IsZero() {
-		return time.Time{}, false
-	}
-	return oldest, true
-}
-
-func parseCodexProcessStartedAt(line string, now time.Time) (time.Time, bool) {
-	fields := strings.Fields(line)
-	if len(fields) < 3 {
-		return time.Time{}, false
-	}
-	elapsedSeconds, err := strconv.Atoi(fields[0])
-	if err != nil || elapsedSeconds < 0 {
-		return time.Time{}, false
-	}
-	processLine := strings.Join(fields[1:], " ")
-	if !looksLikeCodexProcessLine(processLine) {
-		return time.Time{}, false
-	}
-	return now.Add(-time.Duration(elapsedSeconds) * time.Second), true
 }
 
 func hasCodexApprovalPromptInPane(paneID string) bool {

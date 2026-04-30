@@ -128,6 +128,10 @@ func stateFilePath(session, windowIndex, paneID string) string {
 }
 
 func writeState(ps *PaneState) error {
+	return writeStateAt(ps, time.Now())
+}
+
+func writeStateAt(ps *PaneState, now time.Time) error {
 	switch ps.Agent {
 	case AgentClaude, AgentCodex, AgentUnknown:
 	default:
@@ -136,7 +140,7 @@ func writeState(ps *PaneState) error {
 	if err := ensureStateDir(); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
-	ps.LastUpdatedAt = time.Now().Format(time.RFC3339)
+	ps.LastUpdatedAt = now.Format(time.RFC3339)
 
 	data, err := json.MarshalIndent(ps, "", "  ")
 	if err != nil {
@@ -471,10 +475,6 @@ func overlayLiveCodexPanes(states []*PaneState, panes []TmuxPane, now time.Time)
 }
 
 func newLiveCodexState(pane TmuxPane, now time.Time) *PaneState {
-	lastUpdatedAt := now
-	if startedAt, ok := codexProcessStartedAt(pane.Tty, now); ok {
-		lastUpdatedAt = startedAt
-	}
 	return &PaneState{
 		Agent:         AgentCodex,
 		Session:       pane.Session,
@@ -483,7 +483,7 @@ func newLiveCodexState(pane TmuxPane, now time.Time) *PaneState {
 		PaneID:        pane.PaneID,
 		PaneTitle:     pane.PaneTitle,
 		State:         codexLiveState(pane),
-		LastUpdatedAt: lastUpdatedAt.Format(time.RFC3339),
+		LastUpdatedAt: now.Format(time.RFC3339),
 		Cwd:           pane.Cwd,
 		Branch:        getGitBranch(pane.Cwd),
 	}
@@ -492,11 +492,6 @@ func newLiveCodexState(pane TmuxPane, now time.Time) *PaneState {
 func mergeExistingLiveCodexState(ps, existing *PaneState, pane TmuxPane) {
 	ps.Branch = existing.Branch
 	ps.Preview = existing.Preview
-	if existing.Agent == AgentCodex && existing.State == StateApprovalWaiting {
-		ps.State = existing.State
-		ps.LastUpdatedAt = existing.LastUpdatedAt
-		return
-	}
 	if existing.Agent == AgentCodex && existing.State == ps.State {
 		ps.LastUpdatedAt = existing.LastUpdatedAt
 		return

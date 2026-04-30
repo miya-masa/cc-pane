@@ -277,7 +277,7 @@ cc-pane outputs data (`ls --tsv`, `ls --json`, `show`), and users compose with t
 
 ## Known Limitations
 
-- **Codex coverage is limited to turn completion.** Codex CLI v0.x's interactive mode only fires the legacy `[notify]` hook (turn end) — it does NOT support per-tool-call events like Claude's `PreToolUse` / `PostToolUse` / `PermissionRequest`. cc-pane therefore can only show Codex panes as `waiting_input` after each turn; you will not see `running` or `approval_waiting` states for Codex sessions.
+- **Codex coverage is inferred from tmux between turn-completion hooks.** Codex CLI v0.x's interactive mode only fires the legacy `[notify]` hook (turn end) — it does NOT support per-tool-call events like Claude's `PreToolUse` / `PostToolUse` / `PermissionRequest`. cc-pane uses tmux pane title/content as a best-effort live signal for `running` and `approval_waiting`, then persists Codex state only when the observed state changes.
 - cc-pane refuses to install the Codex `[notify]` block if your `~/.codex/config.toml` already contains a custom `[notify]` table (TOML disallows duplicate tables and we don't want to clobber your script). Merge it manually before running `cc-pane setup`.
 - `~/.codex/hooks.json` is not written or managed; only `~/.codex/config.toml` is supported. `cc-pane doctor` warns when both files are present.
 - Backups created by setup/uninstall use `<path>.cc-pane.bak`, not `<path>.bak` (changed in 0.2.0 to avoid clobbering user-managed backups).

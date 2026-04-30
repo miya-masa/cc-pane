@@ -153,11 +153,41 @@ func listVisibleStates(removeDead bool) ([]*PaneState, error) {
 		return states, nil
 	}
 
-	states = overlayLiveCodexPanes(states, panes, time.Now())
+	now := time.Now()
+	previous := snapshotPaneStates(states)
+	states = overlayLiveCodexPanes(states, panes, now)
+	if err := persistChangedCodexLiveStates(previous, states, now); err != nil {
+		return nil, err
+	}
 	if removeDead {
 		states = cleanupDeadPanes(states, panes)
 	}
 	return states, nil
+}
+
+func snapshotPaneStates(states []*PaneState) []*PaneState {
+	return append([]*PaneState(nil), states...)
+}
+
+func persistChangedCodexLiveStates(previous, current []*PaneState, now time.Time) error {
+	byPaneID := make(map[string]*PaneState, len(previous))
+	for _, ps := range previous {
+		byPaneID[ps.PaneID] = ps
+	}
+
+	for _, ps := range current {
+		if ps.Agent != AgentCodex {
+			continue
+		}
+		prior := byPaneID[ps.PaneID]
+		if prior != nil && prior.Agent == AgentCodex && prior.State == ps.State && prior.LastUpdatedAt == ps.LastUpdatedAt {
+			continue
+		}
+		if err := writeStateAt(ps, now); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func cmdJump(args []string) error {

@@ -3,7 +3,6 @@ package main
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 // buildApprovalMessage is extracted for unit testing (the actual file write
@@ -86,20 +85,5 @@ func TestLooksLikeCodexApprovalPromptIgnoresApprovedPrompt(t *testing.T) {
 
 	if looksLikeCodexApprovalPrompt(content) {
 		t.Fatal("approved prompt must not be treated as active approval_waiting")
-	}
-}
-
-func TestParseCodexProcessStartedAt(t *testing.T) {
-	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.UTC)
-	got, ok := parseCodexProcessStartedAt("300 codex /path/to/codex", now)
-	if !ok {
-		t.Fatal("expected codex process")
-	}
-	if want := now.Add(-5 * time.Minute); !got.Equal(want) {
-		t.Fatalf("startedAt = %s, want %s", got, want)
-	}
-
-	if _, ok := parseCodexProcessStartedAt("300 zsh -zsh", now); ok {
-		t.Fatal("zsh must not be treated as codex process")
 	}
 }
