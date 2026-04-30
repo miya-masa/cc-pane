@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"os"
 	"strings"
@@ -85,8 +86,8 @@ func TestStateIcon(t *testing.T) {
 
 func TestRenderTSV(t *testing.T) {
 	states := []*PaneState{
-		{PaneID: "%1", State: StateRunning, Session: "main", WindowIndex: "0", Cwd: "/tmp", LastUpdatedAt: "2025-01-01T00:00:00Z", Preview: "tool: Bash"},
-		{PaneID: "%2", State: StateWaitingInput, Session: "dev", WindowIndex: "1", Cwd: "/home", LastUpdatedAt: "2025-01-01T00:00:00Z", Preview: "waiting for input"},
+		{Agent: AgentClaude, PaneID: "%1", State: StateRunning, Session: "main", WindowIndex: "0", Cwd: "/tmp", LastUpdatedAt: "2025-01-01T00:00:00Z", Preview: "tool: Bash"},
+		{Agent: AgentClaude, PaneID: "%2", State: StateWaitingInput, Session: "dev", WindowIndex: "1", Cwd: "/home", LastUpdatedAt: "2025-01-01T00:00:00Z", Preview: "waiting for input"},
 	}
 
 	// Capture output by redirecting stdout
@@ -97,16 +98,19 @@ func TestRenderTSV(t *testing.T) {
 		t.Fatalf("expected 2 lines, got %d: %v", len(lines), lines)
 	}
 
-	// First field should be pane_id
+	// Field 1 = pane_id, field 2 = agent label, field 3 = icon + state.
 	fields := strings.Split(lines[0], "\t")
-	if len(fields) != 7 {
-		t.Fatalf("expected 7 tab-separated fields, got %d: %v", len(fields), fields)
+	if len(fields) != 8 {
+		t.Fatalf("expected 8 tab-separated fields, got %d: %v", len(fields), fields)
 	}
 	if fields[0] != "%1" {
 		t.Errorf("field[0] = %q, want %%1", fields[0])
 	}
-	if !strings.Contains(fields[1], StateRunning) {
-		t.Errorf("field[1] = %q, should contain %q", fields[1], StateRunning)
+	if fields[1] != "CC" {
+		t.Errorf("field[1] = %q, want CC (agent label)", fields[1])
+	}
+	if !strings.Contains(fields[2], StateRunning) {
+		t.Errorf("field[2] = %q, should contain %q", fields[2], StateRunning)
 	}
 }
 
@@ -156,12 +160,72 @@ func TestStateLabel(t *testing.T) {
 
 func TestRenderTSV_WithBackgroundAgents(t *testing.T) {
 	states := []*PaneState{
-		{PaneID: "%1", State: StateRunning, Session: "main", WindowIndex: "0", Cwd: "/tmp", LastUpdatedAt: "2025-01-01T00:00:00Z", BackgroundAgents: 2},
+		{Agent: AgentClaude, PaneID: "%1", State: StateRunning, Session: "main", WindowIndex: "0", Cwd: "/tmp", LastUpdatedAt: "2025-01-01T00:00:00Z", BackgroundAgents: 2},
 	}
 
 	output := captureStdout(func() { renderTSV(states) })
 	if !strings.Contains(output, "(+2 bg)") {
 		t.Errorf("expected TSV output to contain '(+2 bg)', got: %s", output)
+	}
+}
+
+func TestAgentLabel(t *testing.T) {
+	cases := []struct {
+		agent string
+		want  string
+	}{
+		{AgentClaude, "CC"},
+		{AgentCodex, "CX"},
+		{AgentUnknown, "??"},
+		{"", "??"},
+		{"gemini", "??"},
+	}
+	for _, c := range cases {
+		got := agentLabel(c.agent)
+		if got != c.want {
+			t.Errorf("agentLabel(%q) = %q, want %q", c.agent, got, c.want)
+		}
+	}
+}
+
+func TestRenderTSVIncludesAgent(t *testing.T) {
+	states := []*PaneState{
+		{Agent: AgentCodex, Session: "s", WindowIndex: "0", WindowName: "w", PaneID: "%1", State: StateRunning, LastUpdatedAt: time.Now().Format(time.RFC3339)},
+	}
+	out := captureStdout(func() { renderTSV(states) })
+	if !strings.HasPrefix(out, "%1\t") {
+		t.Errorf("pane_id should be first field: %q", out)
+	}
+	fields := strings.SplitN(strings.TrimRight(out, "\n"), "\t", 3)
+	if len(fields) < 2 {
+		t.Fatalf("expected at least 2 fields, got %d: %q", len(fields), out)
+	}
+	if fields[1] != "CX" {
+		t.Errorf("2nd field should be 'CX' (agentLabel), got %q", fields[1])
+	}
+}
+
+func TestRenderTableHasAgentColumn(t *testing.T) {
+	states := []*PaneState{
+		{Agent: AgentClaude, Session: "s", WindowIndex: "0", WindowName: "w", PaneID: "%1", State: StateRunning, LastUpdatedAt: time.Now().Format(time.RFC3339)},
+	}
+	out := captureStdout(func() { renderTable(states, false) })
+	if !strings.Contains(out, "AGENT") {
+		t.Errorf("table header should contain 'AGENT': %q", out)
+	}
+	if !strings.Contains(out, "CC") {
+		t.Errorf("Claude row should display 'CC' label: %q", out)
+	}
+}
+
+func TestJSONOutputIncludesAgent(t *testing.T) {
+	ps := &PaneState{Agent: AgentCodex, Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, LastUpdatedAt: "2026-04-30T00:00:00Z"}
+	data, err := json.Marshal(ps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"agent":"codex"`) {
+		t.Errorf("agent field missing or wrong: %s", data)
 	}
 }
 
