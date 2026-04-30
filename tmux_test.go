@@ -51,3 +51,20 @@ func TestLooksLikeCodexProcessLine(t *testing.T) {
 		}
 	}
 }
+
+func TestLooksLikeCodexApprovalPrompt(t *testing.T) {
+	content := `Would you like to run the following command?
+
+  $ git status
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with git status (p)
+  3. No, and tell Codex what to do differently (esc)`
+
+	if !looksLikeCodexApprovalPrompt(content) {
+		t.Fatal("expected Codex approval prompt")
+	}
+	if looksLikeCodexApprovalPrompt("ordinary Codex output") {
+		t.Fatal("ordinary output must not be treated as approval prompt")
+	}
+}

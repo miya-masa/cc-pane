@@ -509,6 +509,9 @@ func isCodexPane(pane TmuxPane) bool {
 }
 
 func codexLiveState(pane TmuxPane) string {
+	if paneHasCodexApprovalPrompt(pane.PaneID) {
+		return StateApprovalWaiting
+	}
 	if hasCodexRunningTitle(pane.PaneTitle) {
 		return StateRunning
 	}

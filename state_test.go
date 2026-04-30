@@ -308,6 +308,35 @@ func TestOverlayLiveCodexPanesMarksSpinnerTitleRunning(t *testing.T) {
 	}
 }
 
+func TestOverlayLiveCodexPanesMarksApprovalPrompt(t *testing.T) {
+	orig := paneHasCodexApprovalPrompt
+	paneHasCodexApprovalPrompt = func(paneID string) bool {
+		return paneID == "%10"
+	}
+	defer func() { paneHasCodexApprovalPrompt = orig }()
+
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "⠹ codex-support",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(nil, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one inferred Codex state, got %d", len(got))
+	}
+	if got[0].State != StateApprovalWaiting {
+		t.Errorf("State = %q, want %q", got[0].State, StateApprovalWaiting)
+	}
+}
+
 func TestOverlayLiveCodexPanesClearsStaleRunningWhenSpinnerStops(t *testing.T) {
 	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
 	states := []*PaneState{

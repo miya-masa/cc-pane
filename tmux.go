@@ -114,6 +114,8 @@ func getPaneContent(paneID string, lines int) (string, error) {
 
 var paneHasCodexProcess = hasCodexProcessOnTTY
 
+var paneHasCodexApprovalPrompt = hasCodexApprovalPromptInPane
+
 func hasCodexProcessOnTTY(tty string) bool {
 	if tty == "" {
 		return false
@@ -143,6 +145,20 @@ func looksLikeCodexProcessLine(line string) bool {
 		strings.Contains(line, "/bin/codex ") ||
 		strings.Contains(line, "/@openai/codex/") ||
 		strings.Contains(line, "@openai/codex")
+}
+
+func hasCodexApprovalPromptInPane(paneID string) bool {
+	content, err := getPaneContent(paneID, 60)
+	if err != nil {
+		return false
+	}
+	return looksLikeCodexApprovalPrompt(content)
+}
+
+func looksLikeCodexApprovalPrompt(content string) bool {
+	return strings.Contains(content, "Would you like to run the following command?") &&
+		strings.Contains(content, "Yes, proceed") &&
+		strings.Contains(content, "No, and tell Codex what to do differently")
 }
 
 // getGitBranch returns the current git branch for a directory.
