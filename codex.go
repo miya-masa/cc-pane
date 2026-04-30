@@ -27,22 +27,26 @@ func codexHooksJSONPath() string {
 	return filepath.Join(home, ".codex", "hooks.json")
 }
 
-// codexInstalled reports whether Codex CLI appears to be installed (spec §6.2).
-// Either the config file or the binary on PATH counts; an empty ~/.codex/
+// agentInstalled reports whether an agent CLI appears to be installed.
+// Either the user-config file or the binary on PATH counts; an empty config
 // directory alone does NOT.
-func codexInstalled() bool {
-	if _, err := os.Stat(codexConfigPath()); err == nil {
+func agentInstalled(configPath, binary string) bool {
+	if _, err := os.Stat(configPath); err == nil {
 		return true
 	}
-	if _, err := exec.LookPath("codex"); err == nil {
+	if _, err := exec.LookPath(binary); err == nil {
 		return true
 	}
 	return false
 }
 
+func codexInstalled() bool {
+	return agentInstalled(codexConfigPath(), "codex")
+}
+
 // codexHooksConfigured reports whether cc-pane has written its managed hook
 // block to ~/.codex/config.toml AND the block contains at least one cc-pane
-// update-state command line (spec §6.2.2 / §6.4).
+// update-state command line.
 func codexHooksConfigured() bool {
 	data, err := os.ReadFile(codexConfigPath())
 	if err != nil {
@@ -57,7 +61,7 @@ func codexHooksConfigured() bool {
 }
 
 // findCodexBlock locates the begin/end marker positions (line-anchored, exact
-// match after right-trim of whitespace; spec §7.2 step 2). Returns
+// match after right-trim of whitespace). Returns
 // (beginByteIdx, endByteIdxExclusive, found).
 func findCodexBlock(content string) (int, int, bool) {
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -82,7 +86,7 @@ func findCodexBlock(content string) (int, int, bool) {
 	return begin, end, true
 }
 
-// codexHookEvents lists Codex hook events cc-pane registers (spec §7.3).
+// codexHookEvents lists Codex hook events cc-pane registers.
 // SessionStart appears first so SessionEnd of a prior agent is followed by the
 // new agent's SessionStart in normal lifecycles.
 var codexHookEvents = []string{
@@ -113,14 +117,14 @@ func codexBlockText() string {
 	return sb.String()
 }
 
-// bakSuffix is the suffix used for backup files created by setup/uninstall
-// (spec §7.2 step 5). The previous .bak naming risked clobbering user-managed
-// backups, so 0.2.0 switched to a cc-pane-specific suffix.
+// bakSuffix is the suffix used for backup files created by setup/uninstall.
+// The previous .bak naming risked clobbering user-managed backups, so 0.2.0
+// switched to a cc-pane-specific suffix.
 const bakSuffix = ".cc-pane.bak"
 
 // mergeCodexHooks ensures the cc-pane managed hook block exists in path.
 // Returns (changed, error). If dryRun is true, no files are written but the
-// proposed addition is printed as a +-prefixed unified diff (spec §7.2 step 7).
+// proposed addition is printed as a +-prefixed unified diff.
 //
 // Behavior matrix:
 //   - empty / missing file:           write the block, changed=true
@@ -128,7 +132,7 @@ const bakSuffix = ".cc-pane.bak"
 //   - block already present + valid: changed=false (idempotent)
 //   - block present but empty/broken: rewrite, changed=true (warn to stderr)
 //   - begin marker but no end marker: error (refuse to modify)
-//   - target is symlink:              error (spec §7.2 step 6)
+//   - target is symlink:              error (refuseSymlink)
 func mergeCodexHooks(path string, dryRun bool) (bool, error) {
 	if err := refuseSymlink(path); err != nil {
 		return false, err
@@ -197,7 +201,7 @@ func hasOnlyBeginMarker(content string) bool {
 	return hasBegin && !hasEnd
 }
 
-// refuseSymlink returns an error when path is a symlink (spec §7.2 step 6).
+// refuseSymlink returns an error when path is a symlink.
 // A missing path is OK (we will create the file).
 func refuseSymlink(path string) error {
 	info, err := os.Lstat(path)
@@ -213,8 +217,7 @@ func refuseSymlink(path string) error {
 	return nil
 }
 
-// printDryRunDiff outputs the proposed block as a +-prefixed unified diff style
-// (spec §7.2 step 7).
+// printDryRunDiff outputs the proposed block as a +-prefixed unified diff style.
 func printDryRunDiff(path, block string) {
 	fmt.Println(path)
 	for _, line := range strings.Split(strings.TrimSuffix(block, "\n"), "\n") {
@@ -224,7 +227,8 @@ func printDryRunDiff(path, block string) {
 
 // removeCodexHooks removes the cc-pane managed block from path. Returns
 // (changed, error). If only the begin marker is present (corrupt state),
-// emit a warning and return (false, nil) per spec §6.3.
+// emit a warning and return (false, nil) — uninstall must not auto-fix
+// suspicious config edits.
 func removeCodexHooks(path string) (bool, error) {
 	if err := refuseSymlink(path); err != nil {
 		return false, err

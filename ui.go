@@ -81,7 +81,7 @@ func stateLabel(ps *PaneState) string {
 	return ps.State
 }
 
-// agentLabel returns the short 2-char display label for an agent (spec §6.5).
+// agentLabel returns the short 2-char display label for an agent.
 func agentLabel(agent string) string {
 	switch agent {
 	case AgentClaude:
@@ -141,10 +141,6 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-// tableSepWidth is the column separator width for the renderTable output;
-// must stay in sync with the header format string.
-const tableSepWidth = 116
-
 // renderTable prints pane states as a formatted table.
 func renderTable(states []*PaneState, useColor bool) {
 	if len(states) == 0 {
@@ -164,7 +160,7 @@ func renderTable(states []*PaneState, useColor bool) {
 	} else {
 		fmt.Println(header)
 	}
-	fmt.Println(strings.Repeat("─", tableSepWidth))
+	fmt.Println(strings.Repeat("─", len(header)))
 
 	for _, ps := range states {
 		icon := paneIcon(ps)
@@ -193,9 +189,9 @@ func renderTable(states []*PaneState, useColor bool) {
 
 // renderTSV outputs states as tab-separated values for piping to other tools.
 // Field 1 is pane_id (for extraction), field 2 is the short agent label
-// (CC / CX / ??, spec §6.5), remaining fields are padded for display.
-// Downstream pipelines that need the canonical agent name (claude / codex /
-// unknown) should use --json which preserves it via the JSON tag.
+// (CC / CX / ??), remaining fields are padded for display. Downstream
+// pipelines that need the canonical agent name (claude / codex / unknown)
+// should use --json which preserves it via the JSON tag.
 func renderTSV(states []*PaneState) {
 	for _, ps := range states {
 		icon := paneIcon(ps)

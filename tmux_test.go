@@ -6,8 +6,8 @@ import (
 )
 
 // buildApprovalMessage is extracted for unit testing (the actual file write
-// side of notifyApproval is exercised via integration). Spec §10 requires
-// switch-based allowlist: claude / codex / others → "unknown agent".
+// side of notifyApproval is exercised via integration). The OSC 9 payload
+// must allow-list agent labels: claude / codex / others → "unknown agent".
 func TestBuildApprovalMessageSanitizesAgent(t *testing.T) {
 	cases := []struct {
 		agent       string

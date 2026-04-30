@@ -123,8 +123,9 @@ func getGitBranch(dir string) string {
 }
 
 // buildApprovalMessage constructs the OSC 9 notification payload with a
-// sanitized agent label. Allow-listed values only (spec §10) — unknown or
-// untrusted values fall through to "unknown agent".
+// sanitized agent label. Allow-listed values only — unknown or untrusted
+// values fall through to "unknown agent" so a hostile --agent value cannot
+// inject escape sequences into the terminal.
 func buildApprovalMessage(agent string) string {
 	var label string
 	switch agent {

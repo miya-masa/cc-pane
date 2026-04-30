@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -15,8 +14,9 @@ import (
 )
 
 // claudeHooksConfigured reports whether cc-pane hook entries exist in
-// ~/.claude/settings.json. Same substring marker strategy as before
-// (spec §6.2.2 explicitly preserves Claude-side legacy detection).
+// ~/.claude/settings.json. Uses substring matching on "cc-pane" rather than
+// a marker block because Claude's settings.json is hand-edited by users and
+// contains no canonical marker.
 func claudeHooksConfigured() bool {
 	home, _ := os.UserHomeDir()
 	data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
@@ -27,9 +27,9 @@ func claudeHooksConfigured() bool {
 }
 
 // agentFlag is a flag.Value implementation that detects duplicate --agent
-// invocations and tracks whether the flag was actually supplied. Spec §6.1
-// distinguishes "absent flag" (legacy claude fallback) from "--agent ”"
-// (usage error) so we cannot use the default flag.String API here.
+// invocations and tracks whether the flag was actually supplied. We need to
+// distinguish "absent flag" (legacy claude fallback) from "--agent ”"
+// (usage error), which the default flag.String API cannot express.
 type agentFlag struct {
 	set   bool
 	value string
@@ -45,25 +45,16 @@ func (a *agentFlag) Set(v string) error {
 	return nil
 }
 
-// applyAgentSwitchReset performs the agent-change pre-processing described in
-// spec §7.3. It returns a *new* PaneState with reset fields applied so callers
-// may mutate further before writeState. Background-agent counter and preview
-// are cleared because those concepts do not carry across agents.
-func applyAgentSwitchReset(prior *PaneState, newAgent string, pane *TmuxPane) *PaneState {
+// applyAgentSwitchReset returns a copy of prior with agent-scoped fields
+// cleared so they don't leak into the next agent's state. Pane fields are
+// not touched here — cmdUpdateState rewrites them from the live tmux pane
+// when it constructs the new PaneState.
+func applyAgentSwitchReset(prior *PaneState, newAgent string) *PaneState {
 	out := *prior
 	out.Agent = newAgent
 	out.BackgroundAgents = 0
 	out.Preview = ""
 	out.LastUpdatedAt = time.Now().Format(time.RFC3339)
-	if pane != nil {
-		out.Session = pane.Session
-		out.WindowIndex = pane.WindowIndex
-		out.WindowName = pane.WindowName
-		out.PaneID = pane.PaneID
-		out.PaneTitle = pane.PaneTitle
-		out.Cwd = pane.Cwd
-		out.Branch = getGitBranch(pane.Cwd)
-	}
 	return &out
 }
 
@@ -356,7 +347,7 @@ func cmdDoctor() error {
 }
 
 func cmdUpdateState(args []string) error {
-	// Step 1: parse flags + validate --agent before any side effects.
+	// Validate --agent before any side effects so usage errors don't fork tmux.
 	fs := flag.NewFlagSet("update-state", flag.ContinueOnError)
 	event := fs.String("event", "", "hook event type")
 	var af agentFlag
@@ -372,7 +363,6 @@ func cmdUpdateState(args []string) error {
 		return err
 	}
 
-	// Step 2: hook payload from stdin (best-effort JSON).
 	eventData, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
@@ -382,14 +372,14 @@ func cmdUpdateState(args []string) error {
 		_ = json.Unmarshal(eventData, &data)
 	}
 
-	// Step 3: tmux pane context (failure leaves state untouched).
 	pane, err := getCurrentPane()
 	if err != nil {
 		return fmt.Errorf("get pane info: %w", err)
 	}
 
-	// Step 4: SessionEnd is the special case from spec §8 — only delete when
-	// the existing state belongs to this agent (or is missing entirely).
+	// SessionEnd: only delete when the existing state belongs to this agent
+	// (or is missing entirely). When agents have already swapped, deleting
+	// would clobber the new agent's pre-existing state.
 	if *event == "SessionEnd" {
 		existing := findStateByPaneIDForCurrentTmux(pane)
 		if existing == nil || existing.Agent == agent {
@@ -403,13 +393,13 @@ func cmdUpdateState(args []string) error {
 		return nil
 	}
 
-	// Step 5: prior + agent-switch pre-processing (spec §7.3).
+	// Agent switch: clear bg counter and preview so they don't leak across.
 	prior := findStateByPaneIDForCurrentTmux(pane)
 	if prior != nil && prior.Agent != agent {
-		prior = applyAgentSwitchReset(prior, agent, pane)
+		prior = applyAgentSwitchReset(prior, agent)
 	}
 
-	// Step 6: bg counter — only claude maintains it.
+	// Background-agent counter is a Claude-only concept.
 	bgCount := 0
 	if prior != nil && !shouldResetStaleAgents(prior) {
 		bgCount = prior.BackgroundAgents
@@ -435,7 +425,6 @@ func cmdUpdateState(args []string) error {
 		bgCount = 0
 	}
 
-	// Step 7: state determination + fall-through / approval / preview / branch.
 	newState := determineState(*event, data, prior)
 
 	if newState == "" && prior != nil && bgCount != prior.BackgroundAgents {
@@ -469,7 +458,6 @@ func cmdUpdateState(args []string) error {
 		branch = getGitBranch(pane.Cwd)
 	}
 
-	// Step 8: write the new state (Agent must be set).
 	ps := &PaneState{
 		Agent:            agent,
 		Session:          pane.Session,
@@ -556,11 +544,9 @@ func cmdSetup(args []string) error {
 		return err
 	}
 
-	// Input validation phase (spec §6.2.1 priority order).
+	// Validate flag combinations before doing anything. setup is stricter
+	// than update-state — "unknown" is not a valid setup target.
 	if af.set {
-		if _, err := normalizeAgent(af.value, true); err != nil {
-			return fmt.Errorf("usage: %w", err)
-		}
 		if af.value != AgentClaude && af.value != AgentCodex {
 			return fmt.Errorf("usage: --agent must be 'claude' or 'codex' (got %q)", af.value)
 		}
@@ -572,7 +558,7 @@ func cmdSetup(args []string) error {
 		}
 	}
 
-	// Determine targets (spec §6.2 step 1-2).
+	// --agent forces a single target; otherwise auto-detect both agents.
 	wantClaude, wantCodex := false, false
 	if af.set {
 		wantClaude = (af.value == AgentClaude)
@@ -635,17 +621,8 @@ func cmdSetup(args []string) error {
 	return nil
 }
 
-// claudeInstalled reports whether Claude Code appears to be installed.
-// Mirror of codexInstalled (spec §6.2): the config file or binary on PATH
-// counts; an empty ~/.claude/ alone does not.
 func claudeInstalled() bool {
-	if _, err := os.Stat(claudeSettingsPath()); err == nil {
-		return true
-	}
-	if _, err := exec.LookPath("claude"); err == nil {
-		return true
-	}
-	return false
+	return agentInstalled(claudeSettingsPath(), "claude")
 }
 
 func setupClaudeHooks(dryRun bool) (bool, error) {

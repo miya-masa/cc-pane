@@ -166,8 +166,7 @@ func TestApplyAgentSwitchReset(t *testing.T) {
 		Agent: AgentClaude, Session: "s", WindowIndex: "0", PaneID: "%99",
 		State: StateRunning, BackgroundAgents: 5, Preview: "old preview",
 	}
-	pane := &TmuxPane{Session: "s", WindowIndex: "0", PaneID: "%99", Cwd: "/tmp", WindowName: "w"}
-	got := applyAgentSwitchReset(prior, AgentCodex, pane)
+	got := applyAgentSwitchReset(prior, AgentCodex)
 	if got.BackgroundAgents != 0 {
 		t.Errorf("BG counter not reset: %d", got.BackgroundAgents)
 	}

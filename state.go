@@ -41,7 +41,7 @@ type PaneState struct {
 	BackgroundAgents int    `json:"background_agents,omitempty"`
 }
 
-// normalizeAgent applies the agent normalization rules (spec §5.1 / §6.1).
+// normalizeAgent applies the agent normalization rules.
 // flagPresent indicates whether --agent was actually supplied on the command
 // line. When the flag is absent the call defaults to claude (legacy behavior).
 // An empty value with flagPresent=true is a usage error.
@@ -127,10 +127,9 @@ func stateFilePath(session, windowIndex, paneID string) string {
 }
 
 func writeState(ps *PaneState) error {
-	if ps.Agent == "" {
-		return fmt.Errorf("writeState: Agent field is empty (bug)")
-	}
-	if ps.Agent != AgentClaude && ps.Agent != AgentCodex && ps.Agent != AgentUnknown {
+	switch ps.Agent {
+	case AgentClaude, AgentCodex, AgentUnknown:
+	default:
 		return fmt.Errorf("writeState: invalid Agent %q", ps.Agent)
 	}
 	if err := ensureStateDir(); err != nil {
@@ -158,7 +157,7 @@ func readState(path string) (*PaneState, error) {
 		return nil, fmt.Errorf("unmarshal %s: %w", filepath.Base(path), err)
 	}
 	if ps.Agent == "" {
-		ps.Agent = AgentClaude // legacy fallback (spec §5.2)
+		ps.Agent = AgentClaude // legacy fallback for state files written before the agent field existed
 	}
 	return &ps, nil
 }
@@ -201,7 +200,7 @@ func listStates() ([]*PaneState, error) {
 // state files share the same pane_id (tmux can recycle pane ids across
 // sessions), prefer the newest LastUpdatedAt. Used by callers without tmux
 // session/window context (cmdShow / cmdRm). update-state should use
-// findStateByPaneIDForCurrentTmux instead. Spec §5.3.
+// findStateByPaneIDForCurrentTmux instead.
 func findStateByPaneID(paneID string) *PaneState {
 	dir := stateDir()
 	pattern := filepath.Join(dir, fmt.Sprintf("*__%s.json", sanitizePaneID(paneID)))
@@ -228,7 +227,7 @@ func findStateByPaneID(paneID string) *PaneState {
 
 // findStateByPaneIDForCurrentTmux is the update-state-aware variant: it
 // prefers state files whose session/window matches the supplied tmux pane,
-// falling back to the newest LastUpdatedAt. Spec §5.3 rule 1 → 2.
+// falling back to the newest LastUpdatedAt when no exact match exists.
 func findStateByPaneIDForCurrentTmux(pane *TmuxPane) *PaneState {
 	if pane == nil {
 		return nil
@@ -388,7 +387,7 @@ func hasPendingWork(ps *PaneState) bool {
 // shouldResetStaleAgents returns true if background agent tracking has been
 // stale for longer than backgroundAgentTimeout. Background agents are a
 // claude-only concept (codex / unknown never accumulate the counter), so
-// stale detection only fires on claude states (spec §7.3).
+// stale detection only fires on claude states.
 func shouldResetStaleAgents(ps *PaneState) bool {
 	if ps == nil || ps.BackgroundAgents <= 0 {
 		return false

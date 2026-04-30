@@ -35,7 +35,7 @@ func TestCodexInstalledEmptyDirIsNotEnough(t *testing.T) {
 		t.Fatal(err)
 	}
 	if codexInstalled() {
-		t.Errorf("empty ~/.codex/ alone should not trigger detection (spec §6.2)")
+		t.Errorf("empty ~/.codex/ alone should not trigger detection")
 	}
 }
 
