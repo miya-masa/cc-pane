@@ -373,6 +373,42 @@ func TestOverlayLiveCodexPanesClearsStaleRunningWhenSpinnerStops(t *testing.T) {
 	}
 }
 
+func TestOverlayLiveCodexPanesPreservesHookApprovalState(t *testing.T) {
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	states := []*PaneState{
+		{
+			Agent:         AgentCodex,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "codex-support",
+			State:         StateApprovalWaiting,
+			LastUpdatedAt: "2026-04-30T18:00:00+09:00",
+			Cwd:           "/repo",
+		},
+	}
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "codex-support",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(states, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one state, got %d", len(got))
+	}
+	if got[0].State != StateApprovalWaiting {
+		t.Errorf("State = %q, want %q", got[0].State, StateApprovalWaiting)
+	}
+}
+
 func TestOverlayLiveCodexPanesReplacesStaleClaudeStateForSamePane(t *testing.T) {
 	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
 	states := []*PaneState{

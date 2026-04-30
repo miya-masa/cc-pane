@@ -488,6 +488,11 @@ func newLiveCodexState(pane TmuxPane, now time.Time) *PaneState {
 func mergeExistingLiveCodexState(ps, existing *PaneState, pane TmuxPane) {
 	ps.Branch = existing.Branch
 	ps.Preview = existing.Preview
+	if existing.Agent == AgentCodex && existing.State == StateApprovalWaiting {
+		ps.State = existing.State
+		ps.LastUpdatedAt = existing.LastUpdatedAt
+		return
+	}
 	if existing.Agent == AgentCodex && existing.State == ps.State {
 		ps.LastUpdatedAt = existing.LastUpdatedAt
 		return
