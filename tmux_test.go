@@ -68,3 +68,22 @@ func TestLooksLikeCodexApprovalPrompt(t *testing.T) {
 		t.Fatal("ordinary output must not be treated as approval prompt")
 	}
 }
+
+func TestLooksLikeCodexApprovalPromptIgnoresApprovedPrompt(t *testing.T) {
+	content := `Would you like to run the following command?
+
+  $ git status
+
+› 1. Yes, proceed (y)
+  2. Yes, and don't ask again for commands that start with git status (p)
+  3. No, and tell Codex what to do differently (esc)
+
+✔ You approved codex to run git status this time
+
+• Ran git status
+  └ ## codex-support`
+
+	if looksLikeCodexApprovalPrompt(content) {
+		t.Fatal("approved prompt must not be treated as active approval_waiting")
+	}
+}

@@ -148,17 +148,35 @@ func looksLikeCodexProcessLine(line string) bool {
 }
 
 func hasCodexApprovalPromptInPane(paneID string) bool {
-	content, err := getPaneContent(paneID, 60)
+	content, err := getPaneVisibleContent(paneID)
 	if err != nil {
 		return false
 	}
 	return looksLikeCodexApprovalPrompt(content)
 }
 
+func getPaneVisibleContent(paneID string) (string, error) {
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", paneID).Output()
+	if err != nil {
+		return "", fmt.Errorf("capture-pane %s: %w", paneID, err)
+	}
+	return strings.TrimRight(string(out), "\n"), nil
+}
+
 func looksLikeCodexApprovalPrompt(content string) bool {
-	return strings.Contains(content, "Would you like to run the following command?") &&
-		strings.Contains(content, "Yes, proceed") &&
-		strings.Contains(content, "No, and tell Codex what to do differently")
+	prompt := strings.LastIndex(content, "Would you like to run the following command?")
+	if prompt < 0 {
+		return false
+	}
+	afterPrompt := content[prompt:]
+	if strings.Contains(afterPrompt, "✔ You approved") ||
+		strings.Contains(afterPrompt, "✘") ||
+		strings.Contains(afterPrompt, "• Ran ") ||
+		strings.Contains(afterPrompt, "• Running ") {
+		return false
+	}
+	return strings.Contains(afterPrompt, "Yes, proceed") &&
+		strings.Contains(afterPrompt, "No, and tell Codex what to do differently")
 }
 
 // getGitBranch returns the current git branch for a directory.
