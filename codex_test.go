@@ -61,8 +61,7 @@ func TestCodexHooksConfigured(t *testing.T) {
 key = "val"
 
 ##### cc-pane:begin #####
-[notify]
-command = "cc-pane update-state --event Stop --agent codex"
+notify = ["cc-pane", "update-state", "--event", "Stop", "--agent", "codex"]
 ##### cc-pane:end #####
 `
 	if err := os.WriteFile(cfg, []byte(content), 0o644); err != nil {
@@ -85,7 +84,7 @@ command = "cc-pane update-state --event Stop --agent codex"
 
 	// only begin (no end) → false
 	noEnd := `##### cc-pane:begin #####
-[notify]
+notify = ["cc-pane"]
 `
 	if err := os.WriteFile(cfg, []byte(noEnd), 0o644); err != nil {
 		t.Fatal(err)
@@ -110,11 +109,46 @@ func TestMergeCodexHooksEmptyFile(t *testing.T) {
 	if !strings.Contains(string(got), codexBeginMarker) {
 		t.Errorf("missing begin marker: %s", got)
 	}
-	if !strings.Contains(string(got), "[notify]") {
-		t.Errorf("missing [notify] table: %s", got)
+	// notify must be an argv array, NOT a [notify] table — codex CLI errors
+	// on the table form ("invalid type: map, expected a sequence in `notify`").
+	if !strings.Contains(string(got), `notify = [`) {
+		t.Errorf("missing notify array: %s", got)
 	}
-	if !strings.Contains(string(got), `cc-pane update-state --event Stop --agent codex`) {
-		t.Errorf("missing notify command: %s", got)
+	if strings.Contains(string(got), "[notify]") {
+		t.Errorf("must not use [notify] table form: %s", got)
+	}
+	if !strings.Contains(string(got), `"cc-pane"`) || !strings.Contains(string(got), `"--agent"`) {
+		t.Errorf("notify argv must contain cc-pane and --agent: %s", got)
+	}
+}
+
+func TestMergeCodexHooksMigratesLegacyNotifyTable(t *testing.T) {
+	// Pre-fix builds wrote [notify] as a TOML table — codex CLI rejects that
+	// with "invalid type: map, expected a sequence in `notify`". Rewrite to
+	// the argv-array form on next setup.
+	tmp := t.TempDir()
+	cfg := filepath.Join(tmp, "config.toml")
+	legacy := codexBeginMarker + "\n" +
+		"[notify]\n" +
+		`command = "cc-pane update-state --event Stop --agent codex"` + "\n" +
+		codexEndMarker + "\n"
+	if err := os.WriteFile(cfg, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := mergeCodexHooks(cfg, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Error("expected legacy [notify] table to be rewritten")
+	}
+	got, _ := os.ReadFile(cfg)
+	if strings.Contains(string(got), "[notify]") {
+		t.Errorf("legacy [notify] table still present: %s", got)
+	}
+	if !strings.Contains(string(got), "notify = [") {
+		t.Errorf("argv form not added after migration: %s", got)
 	}
 }
 
@@ -143,24 +177,24 @@ func TestMergeCodexHooksMigratesLegacyHooksBlock(t *testing.T) {
 	if strings.Contains(string(got), "[[hooks.") {
 		t.Errorf("legacy [[hooks.X]] block still present: %s", got)
 	}
-	if !strings.Contains(string(got), "[notify]") {
-		t.Errorf("[notify] not added after migration: %s", got)
+	if !strings.Contains(string(got), "notify = [") {
+		t.Errorf("notify argv array not added after migration: %s", got)
 	}
 }
 
 func TestMergeCodexHooksRefusesExternalNotify(t *testing.T) {
-	// User already has a custom [notify] block outside our markers — refuse to
-	// overwrite, since two [notify] tables would make the TOML invalid and we
-	// don't want to clobber the user's work.
+	// User already has a custom notify = [...] outside our markers — refuse
+	// to overwrite, since two notify keys make the TOML invalid and we don't
+	// want to clobber the user's work.
 	tmp := t.TempDir()
 	cfg := filepath.Join(tmp, "config.toml")
-	existing := "[notify]\ncommand = \"/their/own/script.sh\"\n"
+	existing := `notify = ["/their/own/script.sh"]` + "\n"
 	if err := os.WriteFile(cfg, []byte(existing), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	if _, err := mergeCodexHooks(cfg, false); err == nil {
-		t.Error("expected error when user already has a [notify] block")
+		t.Error("expected error when user already has a notify entry")
 	}
 }
 
@@ -219,7 +253,7 @@ func TestMergeCodexHooksRebuildsBrokenBlock(t *testing.T) {
 		t.Error("broken block should be rebuilt (changed=true)")
 	}
 	got, _ := os.ReadFile(cfg)
-	if !strings.Contains(string(got), `command = "cc-pane update-state`) {
+	if !strings.Contains(string(got), `notify = ["cc-pane"`) {
 		t.Errorf("rebuild failed: %s", got)
 	}
 }
@@ -227,7 +261,7 @@ func TestMergeCodexHooksRebuildsBrokenBlock(t *testing.T) {
 func TestMergeCodexHooksMissingEndMarkerAborts(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := filepath.Join(tmp, "config.toml")
-	bad := codexBeginMarker + "\n[notify]\n"
+	bad := codexBeginMarker + "\nnotify = [\"x\"]\n"
 	if err := os.WriteFile(cfg, []byte(bad), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +372,7 @@ func TestRemoveCodexHooksRemovesBlock(t *testing.T) {
 func TestRemoveCodexHooksMissingEndMarker(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := filepath.Join(tmp, "config.toml")
-	bad := codexBeginMarker + "\n[notify]\n"
+	bad := codexBeginMarker + "\nnotify = [\"x\"]\n"
 	if err := os.WriteFile(cfg, []byte(bad), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -90,18 +90,18 @@ func findCodexBlock(content string) (int, int, bool) {
 //
 // Codex CLI v0.x's interactive mode does NOT support Claude-style per-event
 // hooks ([[hooks.X]] arrays are only honored by the experimental app-server
-// subcommand). The only hook the interactive CLI fires is the legacy [notify]
-// table, which runs once at turn completion. We map that to cc-pane's Stop
-// event so Codex panes at minimum show waiting_input after each turn.
+// subcommand). The only hook the interactive CLI fires is `notify`, an argv
+// array (NOT a [notify] table — that yields "invalid type: map, expected a
+// sequence in `notify`") that runs once at turn completion. We map it to
+// cc-pane's Stop event so Codex panes at minimum show waiting_input.
 func codexBlockText() string {
 	var sb strings.Builder
 	sb.WriteString("\n")
 	sb.WriteString(codexBeginMarker + "\n")
 	sb.WriteString("# cc-pane managed config. Do not edit between begin/end markers.\n")
-	sb.WriteString("# Codex CLI only fires [notify] on turn completion — cc-pane maps that\n")
+	sb.WriteString("# Codex CLI only invokes notify on turn completion — cc-pane maps that\n")
 	sb.WriteString("# to a Stop event. See README \"Known Limitations\".\n")
-	sb.WriteString("[notify]\n")
-	sb.WriteString(`command = "cc-pane update-state --event Stop --agent codex"` + "\n")
+	sb.WriteString(`notify = ["cc-pane", "update-state", "--event", "Stop", "--agent", "codex"]` + "\n")
 	sb.WriteString(codexEndMarker + "\n")
 	return sb.String()
 }
@@ -149,10 +149,10 @@ func mergeCodexHooks(path string, dryRun bool) (bool, error) {
 		return false, fmt.Errorf("%s contains begin marker but no end marker; refusing to modify (run cc-pane uninstall or fix manually)", path)
 	}
 
-	// Refuse if the user already has their own [notify] table outside our block —
-	// TOML disallows duplicate tables and we don't want to clobber their script.
-	if hasUnmanagedNotifyTable(content) {
-		return false, fmt.Errorf("%s already defines a [notify] table outside the cc-pane block; refusing to add a second one. Remove or merge it manually, then re-run setup", path)
+	// Refuse if the user already has their own notify entry outside our block —
+	// TOML disallows duplicate keys and we don't want to clobber their script.
+	if hasUnmanagedNotify(content) {
+		return false, fmt.Errorf("%s already defines a notify entry outside the cc-pane block; refusing to add a second one. Remove or merge it manually, then re-run setup", path)
 	}
 
 	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
@@ -182,29 +182,39 @@ func mergeCodexHooks(path string, dryRun bool) (bool, error) {
 }
 
 // isCurrentCodexBlock reports whether a marker-bounded block matches the
-// current canonical form (i.e. a [notify] command pointing at cc-pane). Older
-// forms ([[hooks.X]] arrays) return false so they're rewritten on next setup.
+// current canonical form (notify argv array pointing at cc-pane). Older
+// forms — [[hooks.X]] arrays from spec-time copy-paste, or [notify] tables
+// from the first pivot attempt — return false so they're rewritten on next
+// setup. The `[[hooks.` and `[notify]` exclusions are explicit so a future
+// drift toward either is also caught.
 func isCurrentCodexBlock(block string) bool {
-	if !strings.Contains(block, "[notify]") {
-		return false
-	}
-	if !strings.Contains(block, "cc-pane update-state") {
-		return false
-	}
 	if strings.Contains(block, "[[hooks.") {
+		return false
+	}
+	if strings.Contains(block, "[notify]") {
+		return false
+	}
+	if !strings.Contains(block, "notify = [") {
+		return false
+	}
+	if !strings.Contains(block, "cc-pane") {
 		return false
 	}
 	return true
 }
 
-// hasUnmanagedNotifyTable reports whether content (with the cc-pane block
-// already excised) still contains a [notify] table — meaning the user has
+// hasUnmanagedNotify reports whether content (with the cc-pane block
+// already excised) still contains a notify entry — meaning the user has
 // their own one we'd clash with.
-func hasUnmanagedNotifyTable(content string) bool {
+func hasUnmanagedNotify(content string) bool {
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
-		if strings.TrimRight(scanner.Text(), " \t\r\n") == "[notify]" {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "[notify]" {
+			return true
+		}
+		if strings.HasPrefix(line, "notify ") || strings.HasPrefix(line, "notify=") {
 			return true
 		}
 	}
