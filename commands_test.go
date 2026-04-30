@@ -80,6 +80,48 @@ func TestSetupBakFileNamingChanged(t *testing.T) {
 	}
 }
 
+func TestDoctorCodexNotDetected(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	out := captureStdout(func() { _ = cmdDoctor() })
+	if !strings.Contains(out, "Codex CLI") {
+		t.Errorf("Codex CLI line missing: %s", out)
+	}
+	if !strings.Contains(out, "not detected") {
+		t.Errorf("expected 'not detected' info: %s", out)
+	}
+}
+
+func TestDoctorHooksJSONWarningWhenManaged(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	codexDir := filepath.Join(tmp, ".codex")
+	mustMkdir(t, codexDir)
+	mustWrite(t, filepath.Join(codexDir, "config.toml"), codexBlockText())
+	mustWrite(t, filepath.Join(codexDir, "hooks.json"), "[]")
+
+	out := captureStdout(func() { _ = cmdDoctor() })
+	if !strings.Contains(out, "hooks.json") {
+		t.Errorf("hooks.json warning missing: %s", out)
+	}
+}
+
+func TestDoctorHooksJSONInfoOnlyWhenUnmanaged(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	codexDir := filepath.Join(tmp, ".codex")
+	mustMkdir(t, codexDir)
+	mustWrite(t, filepath.Join(codexDir, "hooks.json"), "[]")
+
+	out := captureStdout(func() { _ = cmdDoctor() })
+	if !strings.Contains(out, "hooks.json") {
+		t.Errorf("hooks.json check missing from doctor: %s", out)
+	}
+}
+
 func TestUninstallRemovesCodexBlock(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

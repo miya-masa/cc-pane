@@ -149,7 +149,7 @@ const tableSepWidth = 116
 func renderTable(states []*PaneState, useColor bool) {
 	if len(states) == 0 {
 		fmt.Println("No agent sessions found.")
-		if !hooksConfigured() {
+		if !claudeHooksConfigured() {
 			fmt.Println("\nHooks are not configured. Run 'cc-pane doctor' for setup instructions.")
 		}
 		return

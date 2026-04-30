@@ -14,14 +14,6 @@ import (
 	"time"
 )
 
-// hooksConfigured checks if cc-pane hooks are present in Claude Code settings.
-//
-// Deprecated: use claudeHooksConfigured. Retained as an alias for the in-repo
-// callers; renamed in cmdDoctor (Task 11) and ui.go.
-func hooksConfigured() bool {
-	return claudeHooksConfigured()
-}
-
 // claudeHooksConfigured reports whether cc-pane hook entries exist in
 // ~/.claude/settings.json. Same substring marker strategy as before
 // (spec §6.2.2 explicitly preserves Claude-side legacy detection).
@@ -320,11 +312,38 @@ func cmdDoctor() error {
 		return fmt.Sprintf("%s (%d state files)", dir, jsonCount), true
 	})
 
-	check("hooks", func() (string, bool) {
-		if hooksConfigured() {
-			return "configured in ~/.claude/settings.json", true
+	check("Claude Code", func() (string, bool) {
+		if !claudeInstalled() {
+			return "not detected (skip)", true
 		}
-		return "not configured (see README for hook setup)", false
+		if claudeHooksConfigured() {
+			return "hooks configured in " + claudeSettingsPath(), true
+		}
+		return "not configured (run 'cc-pane setup')", false
+	})
+
+	check("Codex CLI", func() (string, bool) {
+		if !codexInstalled() {
+			return "not detected (skip)", true
+		}
+		if codexHooksConfigured() {
+			return "hooks configured in " + codexConfigPath(), true
+		}
+		return "not configured (run 'cc-pane setup')", false
+	})
+
+	check("Codex hooks.json", func() (string, bool) {
+		if _, err := os.Stat(codexHooksJSONPath()); os.IsNotExist(err) {
+			return "absent", true
+		}
+		managed := false
+		if data, err := os.ReadFile(codexConfigPath()); err == nil {
+			_, _, managed = findCodexBlock(string(data))
+		}
+		if managed {
+			return "detected; cc-pane writes hooks only to config.toml — hooks may not fire", false
+		}
+		return "detected; informational (cc-pane is not managing Codex)", true
 	})
 
 	fmt.Println(strings.Repeat("─", 50))
