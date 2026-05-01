@@ -2,9 +2,248 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func mustMkdir(t *testing.T, p string) {
+	t.Helper()
+	if err := os.MkdirAll(p, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustWrite(t *testing.T, p, content string) {
+	t.Helper()
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetupAutoDetectClaudeOnly(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".claude"))
+	mustWrite(t, filepath.Join(tmp, ".claude", "settings.json"), "{}")
+
+	if err := cmdSetup([]string{"--dry-run"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetupAgentMismatchExits2(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	if err := cmdSetup([]string{"--agent", "claude", "--no-claude"}); err == nil {
+		t.Error("expected error (usage)")
+	}
+}
+
+func TestSetupInvalidAgentValueExits2(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	if err := cmdSetup([]string{"--agent", "gemini"}); err == nil {
+		t.Error("expected error for unknown agent value")
+	}
+}
+
+func TestSetupAgentForcedButNotDetectedExits1(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	if err := cmdSetup([]string{"--agent", "codex"}); err == nil {
+		t.Error("expected error when --agent codex but Codex not detected")
+	}
+}
+
+func TestSetupBakFileNamingChanged(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".claude"))
+	settings := filepath.Join(tmp, ".claude", "settings.json")
+	mustWrite(t, settings, "{}")
+
+	if err := cmdSetup([]string{"--no-codex"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(settings + ".cc-pane.bak"); err != nil {
+		t.Errorf(".cc-pane.bak missing: %v", err)
+	}
+	if _, err := os.Stat(settings + ".bak"); err == nil {
+		t.Errorf("old .bak naming should not be created")
+	}
+}
+
+func TestDoctorCodexNotDetected(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	out := captureStdout(func() { _ = cmdDoctor() })
+	if !strings.Contains(out, "Codex CLI") {
+		t.Errorf("Codex CLI line missing: %s", out)
+	}
+	if !strings.Contains(out, "not detected") {
+		t.Errorf("expected 'not detected' info: %s", out)
+	}
+}
+
+func TestDoctorHooksJSONWarningWhenManaged(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	codexDir := filepath.Join(tmp, ".codex")
+	mustMkdir(t, codexDir)
+	mustWrite(t, filepath.Join(codexDir, "config.toml"), codexBlockText())
+	mustWrite(t, filepath.Join(codexDir, "hooks.json"), "[]")
+
+	out := captureStdout(func() { _ = cmdDoctor() })
+	if !strings.Contains(out, "hooks.json") {
+		t.Errorf("hooks.json warning missing: %s", out)
+	}
+}
+
+func TestDoctorHooksJSONInfoOnlyWhenUnmanaged(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	codexDir := filepath.Join(tmp, ".codex")
+	mustMkdir(t, codexDir)
+	mustWrite(t, filepath.Join(codexDir, "hooks.json"), "[]")
+
+	out := captureStdout(func() { _ = cmdDoctor() })
+	if !strings.Contains(out, "hooks.json") {
+		t.Errorf("hooks.json check missing from doctor: %s", out)
+	}
+}
+
+func TestSetupPrintsCodexAddedFirstTime(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".codex"))
+	mustWrite(t, filepath.Join(tmp, ".codex", "config.toml"), "")
+
+	out := captureStdout(func() { _ = cmdSetup([]string{"--no-claude"}) })
+	if !strings.Contains(out, "Added cc-pane hooks to") {
+		t.Errorf("expected 'Added cc-pane hooks' in output: %q", out)
+	}
+	if !strings.Contains(out, "config.toml") {
+		t.Errorf("expected config.toml path in output: %q", out)
+	}
+}
+
+func TestSetupPrintsCodexAlreadyConfiguredOnIdempotent(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".codex"))
+	mustWrite(t, filepath.Join(tmp, ".codex", "config.toml"), "")
+
+	// First setup writes the block.
+	if err := cmdSetup([]string{"--no-claude"}); err != nil {
+		t.Fatal(err)
+	}
+	// Second setup should report idempotent status.
+	out := captureStdout(func() { _ = cmdSetup([]string{"--no-claude"}) })
+	if !strings.Contains(out, "Codex hooks already configured") {
+		t.Errorf("expected idempotent status in output: %q", out)
+	}
+}
+
+func TestSetupPrintsCodexDryRun(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".codex"))
+	mustWrite(t, filepath.Join(tmp, ".codex", "config.toml"), "")
+
+	out := captureStdout(func() { _ = cmdSetup([]string{"--no-claude", "--dry-run"}) })
+	if !strings.Contains(out, "Would add cc-pane hooks to") {
+		t.Errorf("expected dry-run message in output: %q", out)
+	}
+}
+
+func TestUninstallRemovesCodexBlock(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	codexDir := filepath.Join(tmp, ".codex")
+	mustMkdir(t, codexDir)
+	cfg := filepath.Join(codexDir, "config.toml")
+	mustWrite(t, cfg, "[other]\n"+codexBlockText())
+
+	if err := cmdUninstall([]string{}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(cfg)
+	if strings.Contains(string(got), codexBeginMarker) {
+		t.Errorf("Codex block not removed: %s", got)
+	}
+}
+
+func TestUninstallSurvivesPartialFailure(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("PATH", "")
+	mustMkdir(t, filepath.Join(tmp, ".claude"))
+	mustWrite(t, filepath.Join(tmp, ".claude", "settings.json"), `{"hooks":{}}`)
+	if err := cmdUninstall([]string{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentFlagSetTwiceErrors(t *testing.T) {
+	var af agentFlag
+	if err := af.Set("claude"); err != nil {
+		t.Fatal(err)
+	}
+	if err := af.Set("codex"); err == nil {
+		t.Error("expected error on duplicate Set")
+	}
+}
+
+func TestApplyAgentSwitchReset(t *testing.T) {
+	prior := &PaneState{
+		Agent: AgentClaude, Session: "s", WindowIndex: "0", PaneID: "%99",
+		State: StateRunning, BackgroundAgents: 5, Preview: "old preview",
+	}
+	got := applyAgentSwitchReset(prior, AgentCodex)
+	if got.BackgroundAgents != 0 {
+		t.Errorf("BG counter not reset: %d", got.BackgroundAgents)
+	}
+	if got.Agent != AgentCodex {
+		t.Errorf("Agent not switched: %s", got.Agent)
+	}
+	if got.Preview != "" {
+		t.Errorf("Preview not cleared: %q", got.Preview)
+	}
+}
+
+func TestMergeHooksIncludesAgentFlag(t *testing.T) {
+	settings := map[string]any{}
+	if !mergeHooks(settings) {
+		t.Fatal("mergeHooks should report changes")
+	}
+	hooks := settings["hooks"].(map[string]any)
+	for _, event := range requiredHookEvents {
+		entries := toSlice(hooks[event])
+		if len(entries) == 0 {
+			t.Fatalf("no entries for %s", event)
+		}
+		entry := entries[0].(map[string]any)
+		inner := entry["hooks"].([]any)[0].(map[string]any)
+		cmd, _ := inner["command"].(string)
+		if !strings.Contains(cmd, "--agent claude") {
+			t.Errorf("event %s: command missing --agent claude: %q", event, cmd)
+		}
+	}
+}
 
 func TestMergeHooks_CleansNullValues(t *testing.T) {
 	settings := map[string]any{

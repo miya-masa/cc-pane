@@ -8,6 +8,68 @@ import (
 	"time"
 )
 
+func TestNormalizeAgent(t *testing.T) {
+	tests := []struct {
+		name        string
+		raw         string
+		flagPresent bool
+		want        string
+		wantErr     bool
+	}{
+		{"flag absent → claude fallback", "", false, AgentClaude, false},
+		{"explicit claude", "claude", true, AgentClaude, false},
+		{"explicit codex", "codex", true, AgentCodex, false},
+		{"unknown value → unknown literal", "gemini", true, AgentUnknown, false},
+		{"uppercase Claude → unknown", "Claude", true, AgentUnknown, false},
+		{"empty value with flag present → error", "", true, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := normalizeAgent(tt.raw, tt.flagPresent)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("normalizeAgent(%q, %v) err=%v wantErr=%v", tt.raw, tt.flagPresent, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("normalizeAgent(%q, %v) = %q, want %q", tt.raw, tt.flagPresent, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPaneStateAgentRoundTrip(t *testing.T) {
+	t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+	ps := &PaneState{Agent: AgentCodex, Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning}
+	if err := writeState(ps); err != nil {
+		t.Fatal(err)
+	}
+	got := findStateByPaneID("%1")
+	if got == nil || got.Agent != AgentCodex {
+		t.Errorf("agent round-trip failed: %+v", got)
+	}
+}
+
+func TestReadStateLegacyAgentFallback(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+	// 旧形式: agent フィールドなし
+	legacy := `{"session":"s","window_index":"0","pane_id":"%1","state":"running","last_updated_at":"2026-04-30T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "s__0__1.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := findStateByPaneID("%1")
+	if got == nil || got.Agent != AgentClaude {
+		t.Errorf("legacy fallback failed: %+v", got)
+	}
+}
+
+func TestWriteStateRejectsEmptyAgent(t *testing.T) {
+	t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+	ps := &PaneState{Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning}
+	if err := writeState(ps); err == nil {
+		t.Error("expected error when Agent is empty")
+	}
+}
+
 func TestStatePriority(t *testing.T) {
 	tests := []struct {
 		state    string
@@ -91,6 +153,7 @@ func TestWriteAndReadState(t *testing.T) {
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
 
 	ps := &PaneState{
+		Agent:       AgentClaude,
 		Session:     "main",
 		WindowIndex: "0",
 		WindowName:  "dev",
@@ -140,9 +203,9 @@ func TestListStates_SortedByPriority(t *testing.T) {
 
 	// Write states in non-priority order
 	states := []*PaneState{
-		{Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "1", PaneID: "%2", State: StateApprovalWaiting, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "2", PaneID: "%3", State: StateWaitingInput, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "1", PaneID: "%2", State: StateApprovalWaiting, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "2", PaneID: "%3", State: StateWaitingInput, Cwd: "/tmp"},
 	}
 
 	for _, ps := range states {
@@ -164,6 +227,487 @@ func TestListStates_SortedByPriority(t *testing.T) {
 		if got[i].State != want {
 			t.Errorf("position %d: state = %q, want %q", i, got[i].State, want)
 		}
+	}
+}
+
+func TestOverlayLiveCodexPanesAddsMissingCodexState(t *testing.T) {
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "Codex",
+			Cwd:            "/repo",
+			Tty:            "/dev/pts/8",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(nil, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one inferred Codex state, got %d", len(got))
+	}
+	if got[0].Agent != AgentCodex {
+		t.Errorf("Agent = %q, want %q", got[0].Agent, AgentCodex)
+	}
+	if got[0].State != StateWaitingInput {
+		t.Errorf("State = %q, want %q", got[0].State, StateWaitingInput)
+	}
+	if got[0].LastUpdatedAt != now.Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want first observation time", got[0].LastUpdatedAt)
+	}
+}
+
+func TestOverlayLiveCodexPanesDetectsCodexChildProcess(t *testing.T) {
+	orig := paneHasCodexProcess
+	paneHasCodexProcess = func(tty string) bool {
+		return tty == "/dev/pts/8"
+	}
+	defer func() { paneHasCodexProcess = orig }()
+
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			Cwd:            "/repo",
+			Tty:            "/dev/pts/8",
+			CurrentCommand: "node",
+		},
+	}
+
+	got := overlayLiveCodexPanes(nil, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one inferred Codex state, got %d", len(got))
+	}
+	if got[0].Agent != AgentCodex {
+		t.Errorf("Agent = %q, want %q", got[0].Agent, AgentCodex)
+	}
+}
+
+func TestOverlayLiveCodexPanesMarksSpinnerTitleRunning(t *testing.T) {
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "⠹ codex-support",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(nil, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one inferred Codex state, got %d", len(got))
+	}
+	if got[0].State != StateRunning {
+		t.Errorf("State = %q, want %q", got[0].State, StateRunning)
+	}
+}
+
+func TestOverlayLiveCodexPanesMarksApprovalPrompt(t *testing.T) {
+	orig := paneHasCodexApprovalPrompt
+	paneHasCodexApprovalPrompt = func(paneID string) bool {
+		return paneID == "%10"
+	}
+	defer func() { paneHasCodexApprovalPrompt = orig }()
+
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "⠹ codex-support",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(nil, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one inferred Codex state, got %d", len(got))
+	}
+	if got[0].State != StateApprovalWaiting {
+		t.Errorf("State = %q, want %q", got[0].State, StateApprovalWaiting)
+	}
+	if got[0].LastUpdatedAt != now.Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want state transition time", got[0].LastUpdatedAt)
+	}
+}
+
+func TestOverlayLiveCodexPanesClearsStaleRunningWhenSpinnerStops(t *testing.T) {
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	states := []*PaneState{
+		{
+			Agent:         AgentCodex,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "⠹ codex-support",
+			State:         StateRunning,
+			LastUpdatedAt: "2026-04-30T18:00:00+09:00",
+			Cwd:           "/repo",
+		},
+	}
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "codex-support",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(states, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one state, got %d", len(got))
+	}
+	if got[0].State != StateWaitingInput {
+		t.Errorf("State = %q, want %q", got[0].State, StateWaitingInput)
+	}
+	if got[0].LastUpdatedAt != now.Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want state transition time", got[0].LastUpdatedAt)
+	}
+}
+
+func TestOverlayLiveCodexPanesClearsApprovalWhenPromptDisappears(t *testing.T) {
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	states := []*PaneState{
+		{
+			Agent:         AgentCodex,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "codex-support",
+			State:         StateApprovalWaiting,
+			LastUpdatedAt: "2026-04-30T18:00:00+09:00",
+			Cwd:           "/repo",
+		},
+	}
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "codex-support",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(states, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one state, got %d", len(got))
+	}
+	if got[0].State != StateWaitingInput {
+		t.Errorf("State = %q, want %q", got[0].State, StateWaitingInput)
+	}
+	if got[0].LastUpdatedAt != now.Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want state transition time", got[0].LastUpdatedAt)
+	}
+}
+
+func TestOverlayLiveCodexPanesPreservesTimestampWhenStateUnchanged(t *testing.T) {
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	old := "2026-04-30T18:00:00+09:00"
+	states := []*PaneState{
+		{
+			Agent:         AgentCodex,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "codex-support",
+			State:         StateWaitingInput,
+			LastUpdatedAt: old,
+			Cwd:           "/repo",
+		},
+	}
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "codex-support",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(states, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one state, got %d", len(got))
+	}
+	if got[0].State != StateWaitingInput {
+		t.Errorf("State = %q, want %q", got[0].State, StateWaitingInput)
+	}
+	if got[0].LastUpdatedAt != old {
+		t.Errorf("LastUpdatedAt = %q, want preserved timestamp %q", got[0].LastUpdatedAt, old)
+	}
+}
+
+func TestOverlayLiveCodexPanesUpdatesTimestampWhenStateStartsRunning(t *testing.T) {
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	states := []*PaneState{
+		{
+			Agent:         AgentCodex,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "codex-support",
+			State:         StateWaitingInput,
+			LastUpdatedAt: "2026-04-30T18:00:00+09:00",
+			Cwd:           "/repo",
+		},
+	}
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "⠹ codex-support",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(states, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one state, got %d", len(got))
+	}
+	if got[0].State != StateRunning {
+		t.Errorf("State = %q, want %q", got[0].State, StateRunning)
+	}
+	if got[0].LastUpdatedAt != now.Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want state transition time", got[0].LastUpdatedAt)
+	}
+}
+
+func TestOverlayLiveCodexPanesReplacesStaleClaudeStateForSamePane(t *testing.T) {
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	states := []*PaneState{
+		{
+			Agent:         AgentClaude,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "Claude",
+			State:         StateWaitingInput,
+			LastUpdatedAt: "2026-04-30T18:00:00+09:00",
+			Cwd:           "/repo",
+		},
+	}
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "Codex",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	got := overlayLiveCodexPanes(states, panes, now)
+	if len(got) != 1 {
+		t.Fatalf("expected one state after replacement, got %d", len(got))
+	}
+	if got[0].Agent != AgentCodex {
+		t.Errorf("Agent = %q, want %q", got[0].Agent, AgentCodex)
+	}
+	if got[0].PaneTitle != "Codex" {
+		t.Errorf("PaneTitle = %q, want Codex", got[0].PaneTitle)
+	}
+	if got[0].LastUpdatedAt != now.Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want replacement time", got[0].LastUpdatedAt)
+	}
+}
+
+func TestPersistChangedCodexLiveStatesWritesMissingState(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	current := []*PaneState{
+		{
+			Agent:         AgentCodex,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "Codex",
+			State:         StateWaitingInput,
+			LastUpdatedAt: now.Format(time.RFC3339),
+			Cwd:           "/repo",
+		},
+	}
+
+	if err := persistChangedCodexLiveStates(nil, current, now); err != nil {
+		t.Fatalf("persistChangedCodexLiveStates: %v", err)
+	}
+	got, err := readState(stateFilePath("main", "0", "%10"))
+	if err != nil {
+		t.Fatalf("readState: %v", err)
+	}
+	if got.Agent != AgentCodex {
+		t.Errorf("Agent = %q, want %q", got.Agent, AgentCodex)
+	}
+	if got.State != StateWaitingInput {
+		t.Errorf("State = %q, want %q", got.State, StateWaitingInput)
+	}
+	if got.LastUpdatedAt != now.Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want %q", got.LastUpdatedAt, now.Format(time.RFC3339))
+	}
+}
+
+func TestSnapshotPaneStatesPreservesPreviousSliceAcrossOverlay(t *testing.T) {
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	old := "2026-04-30T18:00:00+09:00"
+	states := []*PaneState{
+		{
+			Agent:         AgentCodex,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "Codex",
+			State:         StateWaitingInput,
+			LastUpdatedAt: old,
+			Cwd:           "/repo",
+		},
+	}
+	previous := snapshotPaneStates(states)
+	panes := []TmuxPane{
+		{
+			Session:        "main",
+			WindowIndex:    "0",
+			WindowName:     "dev",
+			PaneID:         "%10",
+			PaneTitle:      "⠹ Codex",
+			Cwd:            "/repo",
+			CurrentCommand: "codex",
+		},
+	}
+
+	current := overlayLiveCodexPanes(states, panes, now)
+	if current[0].State != StateRunning {
+		t.Fatalf("current state = %q, want %q", current[0].State, StateRunning)
+	}
+	if previous[0].State != StateWaitingInput {
+		t.Fatalf("previous state = %q, want preserved %q", previous[0].State, StateWaitingInput)
+	}
+	if previous[0].LastUpdatedAt != old {
+		t.Fatalf("previous LastUpdatedAt = %q, want preserved %q", previous[0].LastUpdatedAt, old)
+	}
+}
+
+func TestPersistChangedCodexLiveStatesKeepsTimestampForUnchangedState(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+	old := time.Date(2026, 4, 30, 18, 0, 0, 0, time.Local)
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	prior := &PaneState{
+		Agent:       AgentCodex,
+		Session:     "main",
+		WindowIndex: "0",
+		WindowName:  "dev",
+		PaneID:      "%10",
+		PaneTitle:   "Codex",
+		State:       StateWaitingInput,
+		Cwd:         "/repo",
+	}
+	if err := writeStateAt(prior, old); err != nil {
+		t.Fatalf("writeStateAt: %v", err)
+	}
+	current := []*PaneState{
+		{
+			Agent:         AgentCodex,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "Codex",
+			State:         StateWaitingInput,
+			LastUpdatedAt: old.Format(time.RFC3339),
+			Cwd:           "/repo",
+		},
+	}
+
+	if err := persistChangedCodexLiveStates([]*PaneState{prior}, current, now); err != nil {
+		t.Fatalf("persistChangedCodexLiveStates: %v", err)
+	}
+	got, err := readState(stateFilePath("main", "0", "%10"))
+	if err != nil {
+		t.Fatalf("readState: %v", err)
+	}
+	if got.LastUpdatedAt != old.Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want unchanged %q", got.LastUpdatedAt, old.Format(time.RFC3339))
+	}
+}
+
+func TestPersistChangedCodexLiveStatesUpdatesTimestampForChangedState(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+	old := time.Date(2026, 4, 30, 18, 0, 0, 0, time.Local)
+	now := time.Date(2026, 4, 30, 18, 30, 0, 0, time.Local)
+	prior := &PaneState{
+		Agent:       AgentCodex,
+		Session:     "main",
+		WindowIndex: "0",
+		WindowName:  "dev",
+		PaneID:      "%10",
+		PaneTitle:   "Codex",
+		State:       StateWaitingInput,
+		Cwd:         "/repo",
+	}
+	if err := writeStateAt(prior, old); err != nil {
+		t.Fatalf("writeStateAt: %v", err)
+	}
+	current := []*PaneState{
+		{
+			Agent:         AgentCodex,
+			Session:       "main",
+			WindowIndex:   "0",
+			WindowName:    "dev",
+			PaneID:        "%10",
+			PaneTitle:     "⠹ Codex",
+			State:         StateRunning,
+			LastUpdatedAt: now.Format(time.RFC3339),
+			Cwd:           "/repo",
+		},
+	}
+
+	if err := persistChangedCodexLiveStates([]*PaneState{prior}, current, now); err != nil {
+		t.Fatalf("persistChangedCodexLiveStates: %v", err)
+	}
+	got, err := readState(stateFilePath("main", "0", "%10"))
+	if err != nil {
+		t.Fatalf("readState: %v", err)
+	}
+	if got.State != StateRunning {
+		t.Errorf("State = %q, want %q", got.State, StateRunning)
+	}
+	if got.LastUpdatedAt != now.Format(time.RFC3339) {
+		t.Errorf("LastUpdatedAt = %q, want changed %q", got.LastUpdatedAt, now.Format(time.RFC3339))
 	}
 }
 
@@ -197,9 +741,9 @@ func TestCleanStaleStates(t *testing.T) {
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
 
 	states := []*PaneState{
-		{Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "1", PaneID: "%2", State: StateWaitingInput, Cwd: "/tmp"},
-		{Session: "s", WindowIndex: "2", PaneID: "%3", State: StateApprovalWaiting, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "0", PaneID: "%1", State: StateRunning, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "1", PaneID: "%2", State: StateWaitingInput, Cwd: "/tmp"},
+		{Agent: AgentClaude, Session: "s", WindowIndex: "2", PaneID: "%3", State: StateApprovalWaiting, Cwd: "/tmp"},
 	}
 	for _, ps := range states {
 		writeState(ps)
@@ -246,6 +790,7 @@ func TestFindStateByPaneID(t *testing.T) {
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
 
 	ps := &PaneState{
+		Agent:       AgentClaude,
 		Session:     "main",
 		WindowIndex: "0",
 		PaneID:      "%42",
@@ -266,6 +811,90 @@ func TestFindStateByPaneID(t *testing.T) {
 	// Non-existent pane
 	if findStateByPaneID("%999") != nil {
 		t.Error("expected nil for non-existent pane")
+	}
+}
+
+func TestFindStateByPaneIDMultiHit(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+
+	older := `{"agent":"claude","session":"old","window_index":"0","pane_id":"%1","state":"running","last_updated_at":"2025-01-01T00:00:00Z"}`
+	newer := `{"agent":"codex","session":"new","window_index":"1","pane_id":"%1","state":"waiting_input","last_updated_at":"2026-04-30T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "old__0__1.json"), []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "new__1__1.json"), []byte(newer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := findStateByPaneID("%1")
+	if got == nil {
+		t.Fatal("expected hit, got nil")
+	}
+	if got.Session != "new" {
+		t.Errorf("expected newest LastUpdatedAt 'new', got %q", got.Session)
+	}
+}
+
+func TestFindStateByPaneIDForCurrentTmuxPrefersSessionWindow(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+
+	stale := `{"agent":"claude","session":"old","window_index":"0","pane_id":"%1","state":"running","last_updated_at":"2026-04-30T10:00:00Z"}`
+	current := `{"agent":"codex","session":"main","window_index":"2","pane_id":"%1","state":"waiting_input","last_updated_at":"2025-01-01T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "old__0__1.json"), []byte(stale), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main__2__1.json"), []byte(current), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pane := &TmuxPane{Session: "main", WindowIndex: "2", PaneID: "%1"}
+	got := findStateByPaneIDForCurrentTmux(pane)
+	if got == nil {
+		t.Fatal("expected hit, got nil")
+	}
+	if got.Session != "main" {
+		t.Errorf("session/window match should win: got session=%q want main", got.Session)
+	}
+}
+
+func TestFindStateByPaneIDForCurrentTmuxFallsBackToNewest(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+
+	older := `{"agent":"claude","session":"a","window_index":"0","pane_id":"%1","state":"running","last_updated_at":"2025-01-01T00:00:00Z"}`
+	newer := `{"agent":"codex","session":"b","window_index":"1","pane_id":"%1","state":"waiting_input","last_updated_at":"2026-04-30T00:00:00Z"}`
+	if err := os.WriteFile(filepath.Join(dir, "a__0__1.json"), []byte(older), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b__1__1.json"), []byte(newer), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pane := &TmuxPane{Session: "main", WindowIndex: "0", PaneID: "%1"}
+	got := findStateByPaneIDForCurrentTmux(pane)
+	if got == nil || got.Session != "b" {
+		t.Errorf("expected fallback to newest 'b', got %+v", got)
+	}
+}
+
+func TestShouldResetStaleAgentsOnlyForClaude(t *testing.T) {
+	old := time.Now().Add(-1 * time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		agent string
+		want  bool
+	}{
+		{AgentClaude, true},
+		{AgentCodex, false},
+		{AgentUnknown, false},
+	}
+	for _, c := range cases {
+		ps := &PaneState{Agent: c.agent, BackgroundAgents: 3, LastUpdatedAt: old}
+		got := shouldResetStaleAgents(ps)
+		if got != c.want {
+			t.Errorf("agent=%s: got %v, want %v", c.agent, got, c.want)
+		}
 	}
 }
 
@@ -544,6 +1173,7 @@ func TestShouldResetStaleAgents(t *testing.T) {
 
 	// Fresh timestamp should not reset
 	fresh := &PaneState{
+		Agent:            AgentClaude,
 		BackgroundAgents: 1,
 		LastUpdatedAt:    time.Now().Format(time.RFC3339),
 	}
@@ -553,6 +1183,7 @@ func TestShouldResetStaleAgents(t *testing.T) {
 
 	// Stale timestamp should reset
 	stale := &PaneState{
+		Agent:            AgentClaude,
 		BackgroundAgents: 1,
 		LastUpdatedAt:    time.Now().Add(-31 * time.Minute).Format(time.RFC3339),
 	}
@@ -562,6 +1193,7 @@ func TestShouldResetStaleAgents(t *testing.T) {
 
 	// Invalid timestamp should reset
 	invalid := &PaneState{
+		Agent:            AgentClaude,
 		BackgroundAgents: 1,
 		LastUpdatedAt:    "invalid",
 	}
@@ -648,6 +1280,7 @@ func TestWriteState_JSONRoundtrip(t *testing.T) {
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
 
 	ps := &PaneState{
+		Agent:       AgentClaude,
 		Session:     "work",
 		WindowIndex: "1",
 		WindowName:  "editor",
@@ -687,7 +1320,7 @@ func TestWriteState_JSONRoundtrip(t *testing.T) {
 }
 
 func TestParseTmuxPaneLine(t *testing.T) {
-	line := "main\t0\tdev\t%12\tclaude-code\t/home/user/project\t/dev/pts/5"
+	line := "main\t0\tdev\t%12\tclaude-code\t/home/user/project\t/dev/pts/5\tclaude"
 	pane, err := parseTmuxPaneLine(line)
 	if err != nil {
 		t.Fatalf("parseTmuxPaneLine: %v", err)
@@ -704,6 +1337,9 @@ func TestParseTmuxPaneLine(t *testing.T) {
 	}
 	if pane.Tty != "/dev/pts/5" {
 		t.Errorf("Tty = %q, want %q", pane.Tty, "/dev/pts/5")
+	}
+	if pane.CurrentCommand != "claude" {
+		t.Errorf("CurrentCommand = %q, want %q", pane.CurrentCommand, "claude")
 	}
 }
 

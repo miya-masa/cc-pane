@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // State constants representing Claude Code session states.
@@ -18,8 +19,16 @@ const (
 	StateApprovalWaiting = "approval_waiting"
 )
 
-// PaneState represents the tracked state of a Claude Code session in a tmux pane.
+// Agent constants identifying which CLI is being tracked.
+const (
+	AgentClaude  = "claude"
+	AgentCodex   = "codex"
+	AgentUnknown = "unknown"
+)
+
+// PaneState represents the tracked state of an agent session in a tmux pane.
 type PaneState struct {
+	Agent            string `json:"agent"`
 	Session          string `json:"session"`
 	WindowIndex      string `json:"window_index"`
 	WindowName       string `json:"window_name"`
@@ -31,6 +40,24 @@ type PaneState struct {
 	Branch           string `json:"branch,omitempty"`
 	Preview          string `json:"preview,omitempty"`
 	BackgroundAgents int    `json:"background_agents,omitempty"`
+}
+
+// normalizeAgent applies the agent normalization rules.
+// flagPresent indicates whether --agent was actually supplied on the command
+// line. When the flag is absent the call defaults to claude (legacy behavior).
+// An empty value with flagPresent=true is a usage error.
+func normalizeAgent(raw string, flagPresent bool) (string, error) {
+	if !flagPresent {
+		return AgentClaude, nil
+	}
+	switch raw {
+	case AgentClaude, AgentCodex:
+		return raw, nil
+	case "":
+		return "", fmt.Errorf("--agent value cannot be empty")
+	default:
+		return AgentUnknown, nil
+	}
 }
 
 // StatePriority returns display priority (lower = higher priority).
@@ -101,10 +128,19 @@ func stateFilePath(session, windowIndex, paneID string) string {
 }
 
 func writeState(ps *PaneState) error {
+	return writeStateAt(ps, time.Now())
+}
+
+func writeStateAt(ps *PaneState, now time.Time) error {
+	switch ps.Agent {
+	case AgentClaude, AgentCodex, AgentUnknown:
+	default:
+		return fmt.Errorf("writeState: invalid Agent %q", ps.Agent)
+	}
 	if err := ensureStateDir(); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
-	ps.LastUpdatedAt = time.Now().Format(time.RFC3339)
+	ps.LastUpdatedAt = now.Format(time.RFC3339)
 
 	data, err := json.MarshalIndent(ps, "", "  ")
 	if err != nil {
@@ -124,6 +160,9 @@ func readState(path string) (*PaneState, error) {
 	var ps PaneState
 	if err := json.Unmarshal(data, &ps); err != nil {
 		return nil, fmt.Errorf("unmarshal %s: %w", filepath.Base(path), err)
+	}
+	if ps.Agent == "" {
+		ps.Agent = AgentClaude // legacy fallback for state files written before the agent field existed
 	}
 	return &ps, nil
 }
@@ -162,7 +201,11 @@ func listStates() ([]*PaneState, error) {
 	return states, nil
 }
 
-// findStateByPaneID finds the existing state file for a specific pane.
+// findStateByPaneID returns the state for a specific pane_id. When multiple
+// state files share the same pane_id (tmux can recycle pane ids across
+// sessions), prefer the newest LastUpdatedAt. Used by callers without tmux
+// session/window context (cmdShow / cmdRm). update-state should use
+// findStateByPaneIDForCurrentTmux instead.
 func findStateByPaneID(paneID string) *PaneState {
 	dir := stateDir()
 	pattern := filepath.Join(dir, fmt.Sprintf("*__%s.json", sanitizePaneID(paneID)))
@@ -170,11 +213,59 @@ func findStateByPaneID(paneID string) *PaneState {
 	if err != nil || len(matches) == 0 {
 		return nil
 	}
-	ps, err := readState(matches[0])
-	if err != nil {
+	var best *PaneState
+	for _, m := range matches {
+		ps, err := readState(m)
+		if err != nil {
+			continue
+		}
+		if best == nil {
+			best = ps
+			continue
+		}
+		if ps.LastUpdatedAt > best.LastUpdatedAt {
+			best = ps
+		}
+	}
+	return best
+}
+
+// findStateByPaneIDForCurrentTmux is the update-state-aware variant: it
+// prefers state files whose session/window matches the supplied tmux pane,
+// falling back to the newest LastUpdatedAt when no exact match exists.
+func findStateByPaneIDForCurrentTmux(pane *TmuxPane) *PaneState {
+	if pane == nil {
 		return nil
 	}
-	return ps
+	dir := stateDir()
+	pattern := filepath.Join(dir, fmt.Sprintf("*__%s.json", sanitizePaneID(pane.PaneID)))
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+	var best *PaneState
+	var bestExact bool
+	for _, m := range matches {
+		ps, err := readState(m)
+		if err != nil {
+			continue
+		}
+		exact := ps.Session == pane.Session && ps.WindowIndex == pane.WindowIndex
+		if best == nil {
+			best = ps
+			bestExact = exact
+			continue
+		}
+		if exact && !bestExact {
+			best = ps
+			bestExact = true
+			continue
+		}
+		if exact == bestExact && ps.LastUpdatedAt > best.LastUpdatedAt {
+			best = ps
+		}
+	}
+	return best
 }
 
 // cleanStaleStates removes state files for panes that no longer exist.
@@ -299,9 +390,14 @@ func hasPendingWork(ps *PaneState) bool {
 }
 
 // shouldResetStaleAgents returns true if background agent tracking has been
-// stale for longer than backgroundAgentTimeout.
+// stale for longer than backgroundAgentTimeout. Background agents are a
+// claude-only concept (codex / unknown never accumulate the counter), so
+// stale detection only fires on claude states.
 func shouldResetStaleAgents(ps *PaneState) bool {
 	if ps == nil || ps.BackgroundAgents <= 0 {
+		return false
+	}
+	if ps.Agent != AgentClaude {
 		return false
 	}
 	t, err := time.Parse(time.RFC3339, ps.LastUpdatedAt)
@@ -337,6 +433,98 @@ func cleanupDeadPanes(states []*PaneState, panes []TmuxPane) []*PaneState {
 		result = append(result, ps)
 	}
 	return result
+}
+
+func overlayLiveCodexPanes(states []*PaneState, panes []TmuxPane, now time.Time) []*PaneState {
+	if len(panes) == 0 {
+		return states
+	}
+
+	byPaneID := make(map[string]int, len(states))
+	for i, ps := range states {
+		byPaneID[ps.PaneID] = i
+	}
+
+	for _, pane := range panes {
+		if !isCodexPane(pane) {
+			continue
+		}
+
+		ps := newLiveCodexState(pane, now)
+
+		if idx, ok := byPaneID[pane.PaneID]; ok {
+			mergeExistingLiveCodexState(ps, states[idx], pane)
+			states[idx] = ps
+			continue
+		}
+
+		byPaneID[pane.PaneID] = len(states)
+		states = append(states, ps)
+	}
+
+	sort.Slice(states, func(i, j int) bool {
+		pi := sortPriority(states[i])
+		pj := sortPriority(states[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return states[i].LastUpdatedAt > states[j].LastUpdatedAt
+	})
+
+	return states
+}
+
+func newLiveCodexState(pane TmuxPane, now time.Time) *PaneState {
+	return &PaneState{
+		Agent:         AgentCodex,
+		Session:       pane.Session,
+		WindowIndex:   pane.WindowIndex,
+		WindowName:    pane.WindowName,
+		PaneID:        pane.PaneID,
+		PaneTitle:     pane.PaneTitle,
+		State:         codexLiveState(pane),
+		LastUpdatedAt: now.Format(time.RFC3339),
+		Cwd:           pane.Cwd,
+		Branch:        getGitBranch(pane.Cwd),
+	}
+}
+
+func mergeExistingLiveCodexState(ps, existing *PaneState, pane TmuxPane) {
+	ps.Branch = existing.Branch
+	ps.Preview = existing.Preview
+	if existing.Agent == AgentCodex && existing.State == ps.State {
+		ps.LastUpdatedAt = existing.LastUpdatedAt
+		return
+	}
+	ps.Preview = ""
+	if ps.Branch == "" {
+		ps.Branch = getGitBranch(pane.Cwd)
+	}
+}
+
+func isCodexPane(pane TmuxPane) bool {
+	if pane.CurrentCommand == "codex" {
+		return true
+	}
+	if pane.CurrentCommand == "node" || pane.CurrentCommand == "node-MainThread" {
+		return paneHasCodexProcess(pane.Tty)
+	}
+	return false
+}
+
+func codexLiveState(pane TmuxPane) string {
+	if paneHasCodexApprovalPrompt(pane.PaneID) {
+		return StateApprovalWaiting
+	}
+	if hasCodexRunningTitle(pane.PaneTitle) {
+		return StateRunning
+	}
+	return StateWaitingInput
+}
+
+func hasCodexRunningTitle(title string) bool {
+	r, _ := utf8.DecodeRuneInString(strings.TrimSpace(title))
+	return r >= '\u2801' && r <= '\u28ff'
 }
 
 // previewMaxLen is the maximum length of preview text before truncation.

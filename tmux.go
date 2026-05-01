@@ -9,16 +9,17 @@ import (
 
 // TmuxPane holds information about a tmux pane.
 type TmuxPane struct {
-	Session     string
-	WindowIndex string
-	WindowName  string
-	PaneID      string
-	PaneTitle   string
-	Cwd         string
-	Tty         string
+	Session        string
+	WindowIndex    string
+	WindowName     string
+	PaneID         string
+	PaneTitle      string
+	Cwd            string
+	Tty            string
+	CurrentCommand string
 }
 
-const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}\t#{pane_tty}"
+const tmuxListFormat = "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_id}\t#{pane_title}\t#{pane_current_path}\t#{pane_tty}\t#{pane_current_command}"
 
 // getCurrentPane returns info about the pane identified by $TMUX_PANE.
 func getCurrentPane() (*TmuxPane, error) {
@@ -48,18 +49,19 @@ func getPaneByID(paneID string) (*TmuxPane, error) {
 }
 
 func parseTmuxPaneLine(line string) (*TmuxPane, error) {
-	parts := strings.SplitN(line, "\t", 7)
-	if len(parts) < 7 {
+	parts := strings.SplitN(line, "\t", 8)
+	if len(parts) < 8 {
 		return nil, fmt.Errorf("unexpected tmux output format: %q", line)
 	}
 	return &TmuxPane{
-		Session:     parts[0],
-		WindowIndex: parts[1],
-		WindowName:  parts[2],
-		PaneID:      parts[3],
-		PaneTitle:   parts[4],
-		Cwd:         parts[5],
-		Tty:         parts[6],
+		Session:        parts[0],
+		WindowIndex:    parts[1],
+		WindowName:     parts[2],
+		PaneID:         parts[3],
+		PaneTitle:      parts[4],
+		Cwd:            parts[5],
+		Tty:            parts[6],
+		CurrentCommand: parts[7],
 	}, nil
 }
 
@@ -110,6 +112,73 @@ func getPaneContent(paneID string, lines int) (string, error) {
 	return strings.TrimRight(string(out), "\n"), nil
 }
 
+var paneHasCodexProcess = hasCodexProcessOnTTY
+
+var paneHasCodexApprovalPrompt = hasCodexApprovalPromptInPane
+
+func hasCodexProcessOnTTY(tty string) bool {
+	if tty == "" {
+		return false
+	}
+	tty = strings.TrimPrefix(tty, "/dev/")
+	out, err := exec.Command("ps", "-o", "comm=", "-o", "args=", "-t", tty).Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if looksLikeCodexProcessLine(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeCodexProcessLine(line string) bool {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	if fields[0] == "codex" {
+		return true
+	}
+	return strings.Contains(line, "/bin/codex") ||
+		strings.Contains(line, "/bin/codex ") ||
+		strings.Contains(line, "/@openai/codex/") ||
+		strings.Contains(line, "@openai/codex")
+}
+
+func hasCodexApprovalPromptInPane(paneID string) bool {
+	content, err := getPaneVisibleContent(paneID)
+	if err != nil {
+		return false
+	}
+	return looksLikeCodexApprovalPrompt(content)
+}
+
+func getPaneVisibleContent(paneID string) (string, error) {
+	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", paneID).Output()
+	if err != nil {
+		return "", fmt.Errorf("capture-pane %s: %w", paneID, err)
+	}
+	return strings.TrimRight(string(out), "\n"), nil
+}
+
+func looksLikeCodexApprovalPrompt(content string) bool {
+	prompt := strings.LastIndex(content, "Would you like to run the following command?")
+	if prompt < 0 {
+		return false
+	}
+	afterPrompt := content[prompt:]
+	if strings.Contains(afterPrompt, "✔ You approved") ||
+		strings.Contains(afterPrompt, "✘") ||
+		strings.Contains(afterPrompt, "• Ran ") ||
+		strings.Contains(afterPrompt, "• Running ") {
+		return false
+	}
+	return strings.Contains(afterPrompt, "Yes, proceed") &&
+		strings.Contains(afterPrompt, "No, and tell Codex what to do differently")
+}
+
 // getGitBranch returns the current git branch for a directory.
 func getGitBranch(dir string) string {
 	if dir == "" {
@@ -122,11 +191,28 @@ func getGitBranch(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// buildApprovalMessage constructs the OSC 9 notification payload with a
+// sanitized agent label. Allow-listed values only — unknown or untrusted
+// values fall through to "unknown agent" so a hostile --agent value cannot
+// inject escape sequences into the terminal.
+func buildApprovalMessage(agent string) string {
+	var label string
+	switch agent {
+	case AgentClaude:
+		label = "claude"
+	case AgentCodex:
+		label = "codex"
+	default:
+		label = "unknown agent"
+	}
+	return fmt.Sprintf("\033Ptmux;\033\033]9;🔴 cc-pane: %s approval needed\a\033\\", label)
+}
+
 // notifyApproval sends an OSC 9 notification to the pane's terminal via tmux
 // DCS passthrough. This works through SSH with terminal emulators that support
 // OSC 9 (iTerm2, WezTerm, Ghostty, etc.) when tmux allow-passthrough is enabled.
 // Failures are silently ignored (best-effort notification).
-func notifyApproval(pane *TmuxPane) {
+func notifyApproval(pane *TmuxPane, agent string) {
 	if pane.Tty == "" {
 		return
 	}
@@ -135,8 +221,7 @@ func notifyApproval(pane *TmuxPane) {
 		return
 	}
 	defer f.Close()
-	// DCS passthrough wraps OSC 9 so tmux forwards it to the terminal
-	_, _ = f.Write([]byte("\033Ptmux;\033\033]9;🔴 cc-pane: approval needed\a\033\\"))
+	_, _ = f.Write([]byte(buildApprovalMessage(agent)))
 }
 
 // commandVersion returns the version string of a command.

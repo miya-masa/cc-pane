@@ -13,8 +13,11 @@ import (
 	"time"
 )
 
-// hooksConfigured checks if cc-pane hooks are present in Claude Code settings.
-func hooksConfigured() bool {
+// claudeHooksConfigured reports whether cc-pane hook entries exist in
+// ~/.claude/settings.json. Uses substring matching on "cc-pane" rather than
+// a marker block because Claude's settings.json is hand-edited by users and
+// contains no canonical marker.
+func claudeHooksConfigured() bool {
 	home, _ := os.UserHomeDir()
 	data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json"))
 	if err != nil {
@@ -23,8 +26,40 @@ func hooksConfigured() bool {
 	return strings.Contains(string(data), "cc-pane")
 }
 
+// agentFlag is a flag.Value implementation that detects duplicate --agent
+// invocations and tracks whether the flag was actually supplied. We need to
+// distinguish "absent flag" (legacy claude fallback) from "--agent ”"
+// (usage error), which the default flag.String API cannot express.
+type agentFlag struct {
+	set   bool
+	value string
+}
+
+func (a *agentFlag) String() string { return a.value }
+func (a *agentFlag) Set(v string) error {
+	if a.set {
+		return fmt.Errorf("--agent specified more than once")
+	}
+	a.set = true
+	a.value = v
+	return nil
+}
+
+// applyAgentSwitchReset returns a copy of prior with agent-scoped fields
+// cleared so they don't leak into the next agent's state. Pane fields are
+// not touched here — cmdUpdateState rewrites them from the live tmux pane
+// when it constructs the new PaneState.
+func applyAgentSwitchReset(prior *PaneState, newAgent string) *PaneState {
+	out := *prior
+	out.Agent = newAgent
+	out.BackgroundAgents = 0
+	out.Preview = ""
+	out.LastUpdatedAt = time.Now().Format(time.RFC3339)
+	return &out
+}
+
 func cmdStatus() error {
-	states, err := listStates()
+	states, err := listVisibleStates(false)
 	if err != nil {
 		return err
 	}
@@ -61,11 +96,10 @@ func cmdWatch(args []string) error {
 		fmt.Print("\033[H\033[2J")
 
 		// Header with timestamp and status summary
-		states, err := listStates()
+		states, err := listVisibleStates(true)
 		if err != nil {
 			return err
 		}
-		states = cleanupDeadPanes(states, nil)
 
 		status := formatStatus(states)
 		header := fmt.Sprintf("cc-pane watch (updated %s, every %s)", time.Now().Format("15:04:05"), *interval)
@@ -89,11 +123,10 @@ func cmdLs(args []string) error {
 		return err
 	}
 
-	states, err := listStates()
+	states, err := listVisibleStates(true)
 	if err != nil {
 		return err
 	}
-	states = cleanupDeadPanes(states, nil)
 
 	if *jsonOutput {
 		return renderJSON(states)
@@ -103,6 +136,57 @@ func cmdLs(args []string) error {
 		return nil
 	}
 	renderTable(states, isColorTerminal())
+	return nil
+}
+
+func listVisibleStates(removeDead bool) ([]*PaneState, error) {
+	states, err := listStates()
+	if err != nil {
+		return nil, err
+	}
+
+	panes, err := listAllPanes()
+	if err != nil {
+		if removeDead {
+			states = cleanupDeadPanes(states, nil)
+		}
+		return states, nil
+	}
+
+	now := time.Now()
+	previous := snapshotPaneStates(states)
+	states = overlayLiveCodexPanes(states, panes, now)
+	if err := persistChangedCodexLiveStates(previous, states, now); err != nil {
+		return nil, err
+	}
+	if removeDead {
+		states = cleanupDeadPanes(states, panes)
+	}
+	return states, nil
+}
+
+func snapshotPaneStates(states []*PaneState) []*PaneState {
+	return append([]*PaneState(nil), states...)
+}
+
+func persistChangedCodexLiveStates(previous, current []*PaneState, now time.Time) error {
+	byPaneID := make(map[string]*PaneState, len(previous))
+	for _, ps := range previous {
+		byPaneID[ps.PaneID] = ps
+	}
+
+	for _, ps := range current {
+		if ps.Agent != AgentCodex {
+			continue
+		}
+		prior := byPaneID[ps.PaneID]
+		if prior != nil && prior.Agent == AgentCodex && prior.State == ps.State && prior.LastUpdatedAt == ps.LastUpdatedAt {
+			continue
+		}
+		if err := writeStateAt(ps, now); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -268,11 +352,38 @@ func cmdDoctor() error {
 		return fmt.Sprintf("%s (%d state files)", dir, jsonCount), true
 	})
 
-	check("hooks", func() (string, bool) {
-		if hooksConfigured() {
-			return "configured in ~/.claude/settings.json", true
+	check("Claude Code", func() (string, bool) {
+		if !claudeInstalled() {
+			return "not detected (skip)", true
 		}
-		return "not configured (see README for hook setup)", false
+		if claudeHooksConfigured() {
+			return "hooks configured in " + claudeSettingsPath(), true
+		}
+		return "not configured (run 'cc-pane setup')", false
+	})
+
+	check("Codex CLI", func() (string, bool) {
+		if !codexInstalled() {
+			return "not detected (skip)", true
+		}
+		if codexHooksConfigured() {
+			return "hooks configured in " + codexConfigPath(), true
+		}
+		return "not configured (run 'cc-pane setup')", false
+	})
+
+	check("Codex hooks.json", func() (string, bool) {
+		if _, err := os.Stat(codexHooksJSONPath()); os.IsNotExist(err) {
+			return "absent", true
+		}
+		managed := false
+		if data, err := os.ReadFile(codexConfigPath()); err == nil {
+			_, _, managed = findCodexBlock(string(data))
+		}
+		if managed {
+			return "detected; cc-pane writes hooks only to config.toml — hooks may not fire", false
+		}
+		return "detected; informational (cc-pane is not managing Codex)", true
 	})
 
 	fmt.Println(strings.Repeat("─", 50))
@@ -285,115 +396,119 @@ func cmdDoctor() error {
 }
 
 func cmdUpdateState(args []string) error {
+	// Validate --agent before any side effects so usage errors don't fork tmux.
 	fs := flag.NewFlagSet("update-state", flag.ContinueOnError)
 	event := fs.String("event", "", "hook event type")
+	var af agentFlag
+	fs.Var(&af, "agent", "agent name (claude|codex)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
 	if *event == "" {
 		return fmt.Errorf("--event is required")
 	}
+	agent, err := normalizeAgent(af.value, af.set)
+	if err != nil {
+		return err
+	}
 
-	// Read event data from stdin (piped by Claude Code hooks)
 	eventData, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		return fmt.Errorf("read stdin: %w", err)
 	}
-
 	var data map[string]any
 	if len(eventData) > 0 {
-		_ = json.Unmarshal(eventData, &data) // best-effort; stdin may be empty
+		_ = json.Unmarshal(eventData, &data)
 	}
 
-	// Get current tmux pane context
 	pane, err := getCurrentPane()
 	if err != nil {
 		return fmt.Errorf("get pane info: %w", err)
 	}
 
-	// SessionEnd: remove state file and exit
+	// SessionEnd: only delete when the existing state belongs to this agent
+	// (or is missing entirely). When agents have already swapped, deleting
+	// would clobber the new agent's pre-existing state.
 	if *event == "SessionEnd" {
-		existing := findStateByPaneID(pane.PaneID)
-		if existing != nil {
-			path := stateFilePath(existing.Session, existing.WindowIndex, existing.PaneID)
-			os.Remove(path)
+		existing := findStateByPaneIDForCurrentTmux(pane)
+		if existing == nil || existing.Agent == agent {
+			if existing != nil {
+				path := stateFilePath(existing.Session, existing.WindowIndex, existing.PaneID)
+				if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
+					fmt.Fprintf(os.Stderr, "cc-pane: warn: remove %s: %v\n", path, rerr)
+				}
+			}
 		}
 		return nil
 	}
 
-	// Read existing state once for fallback values (branch cache, preview, bg agents)
-	existing := findStateByPaneID(pane.PaneID)
+	// Agent switch: clear bg counter and preview so they don't leak across.
+	prior := findStateByPaneIDForCurrentTmux(pane)
+	if prior != nil && prior.Agent != agent {
+		prior = applyAgentSwitchReset(prior, agent)
+	}
 
-	// Compute background agent count (reset if stale)
+	// Background-agent counter is a Claude-only concept.
 	bgCount := 0
-	if existing != nil && !shouldResetStaleAgents(existing) {
-		bgCount = existing.BackgroundAgents
+	if prior != nil && !shouldResetStaleAgents(prior) {
+		bgCount = prior.BackgroundAgents
 	}
-	switch {
-	case *event == "UserPromptSubmit":
-		// New user turn resets background agent tracking
-		bgCount = 0
-	case *event == "Stop" && isUserInterrupt(data):
-		bgCount = 0
-	case isBackgroundAgentLaunch(*event, data):
-		bgCount++
-	case *event == "Notification" && bgCount > 0:
-		// Non-permission/idle notification while agents pending = potential completion
-		nt, _ := data["notification_type"].(string)
-		if nt != "permission_prompt" && nt != "idle_prompt" {
-			bgCount--
+	if agent == AgentClaude {
+		switch {
+		case *event == "UserPromptSubmit":
+			bgCount = 0
+		case *event == "Stop" && isUserInterrupt(data):
+			bgCount = 0
+		case isBackgroundAgentLaunch(*event, data):
+			bgCount++
+		case *event == "Notification" && bgCount > 0:
+			nt, _ := data["notification_type"].(string)
+			if nt != "permission_prompt" && nt != "idle_prompt" {
+				bgCount--
+			}
 		}
-	}
-	if bgCount < 0 {
+		if bgCount < 0 {
+			bgCount = 0
+		}
+	} else {
 		bgCount = 0
 	}
 
-	// Determine new state from event (considering pending background work)
-	newState := determineState(*event, data, existing)
+	newState := determineState(*event, data, prior)
 
-	// Persist bgCount change even when event doesn't trigger a state transition
-	// (e.g., agent completion notification with unknown type)
-	if newState == "" && existing != nil && bgCount != existing.BackgroundAgents {
-		newState = existing.State
+	if newState == "" && prior != nil && bgCount != prior.BackgroundAgents {
+		newState = prior.State
 	}
-
 	if newState == "" {
-		return nil // no state change (e.g., unrecognized Notification)
+		return nil
 	}
 
-	// If last background agent just completed, transition to waiting_input
-	if bgCount == 0 && hasPendingWork(existing) && newState == StateRunning {
+	if bgCount == 0 && hasPendingWork(prior) && newState == StateRunning {
 		newState = StateWaitingInput
 	}
 
-	// Notify when transitioning to approval_waiting (best-effort)
-	if newState == StateApprovalWaiting && (existing == nil || existing.State != StateApprovalWaiting) {
-		notifyApproval(pane)
+	if newState == StateApprovalWaiting && (prior == nil || prior.State != StateApprovalWaiting) {
+		notifyApproval(pane, agent)
 	}
 
-	// Build preview from event data
 	preview := buildPreview(*event, data)
-
-	if preview == "" && existing != nil {
-		preview = existing.Preview
+	if preview == "" && prior != nil {
+		preview = prior.Preview
 	}
-
-	// Override preview when background agents are running after Stop
 	if *event == "Stop" && bgCount > 0 {
 		preview = fmt.Sprintf("bg agents: %d running", bgCount)
 	}
 
-	// Reuse cached branch to avoid spawning git on every hook event
 	branch := ""
-	if existing != nil {
-		branch = existing.Branch
+	if prior != nil {
+		branch = prior.Branch
 	}
 	if branch == "" {
 		branch = getGitBranch(pane.Cwd)
 	}
 
 	ps := &PaneState{
+		Agent:            agent,
 		Session:          pane.Session,
 		WindowIndex:      pane.WindowIndex,
 		WindowName:       pane.WindowName,
@@ -405,7 +520,6 @@ func cmdUpdateState(args []string) error {
 		Preview:          preview,
 		BackgroundAgents: bgCount,
 	}
-
 	return writeState(ps)
 }
 
@@ -471,37 +585,79 @@ func shellFunctionsPath() string {
 func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	dryRun := fs.Bool("dry-run", false, "show what would be changed without writing")
+	noClaude := fs.Bool("no-claude", false, "skip Claude hook installation")
+	noCodex := fs.Bool("no-codex", false, "skip Codex hook installation")
+	var af agentFlag
+	fs.Var(&af, "agent", "force a specific agent only (claude|codex)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
+	// Validate flag combinations before doing anything. setup is stricter
+	// than update-state — "unknown" is not a valid setup target.
+	if af.set {
+		if af.value != AgentClaude && af.value != AgentCodex {
+			return fmt.Errorf("usage: --agent must be 'claude' or 'codex' (got %q)", af.value)
+		}
+		if af.value == AgentClaude && *noClaude {
+			return fmt.Errorf("usage: --agent claude conflicts with --no-claude")
+		}
+		if af.value == AgentCodex && *noCodex {
+			return fmt.Errorf("usage: --agent codex conflicts with --no-codex")
+		}
+	}
+
+	// --agent forces a single target; otherwise auto-detect both agents.
+	wantClaude, wantCodex := false, false
+	if af.set {
+		wantClaude = (af.value == AgentClaude)
+		wantCodex = (af.value == AgentCodex)
+	} else {
+		wantClaude = !*noClaude && claudeInstalled()
+		wantCodex = !*noCodex && codexInstalled()
+	}
+
+	// Forced but not detected → exit 1.
+	if af.set && af.value == AgentClaude && !claudeInstalled() {
+		return fmt.Errorf("Claude not detected; aborting forced setup")
+	}
+	if af.set && af.value == AgentCodex && !codexInstalled() {
+		return fmt.Errorf("Codex not detected; aborting forced setup")
+	}
+
+	if !wantClaude && !wantCodex {
+		fmt.Fprintln(os.Stderr, "cc-pane: warning: no agent targets to set up")
+		return nil
+	}
+
 	anyChange := false
 
-	// 1. Claude Code hooks
-	hooksChanged, err := setupClaudeHooks(*dryRun)
-	if err != nil {
-		return fmt.Errorf("claude hooks: %w", err)
-	}
-	if hooksChanged {
-		anyChange = true
-	}
-
-	// 2. Shell functions
-	shellChanged, err := setupShellFunctions(*dryRun)
-	if err != nil {
-		return fmt.Errorf("shell functions: %w", err)
-	}
-	if shellChanged {
-		anyChange = true
+	if wantClaude {
+		changed, err := setupClaudeHooks(*dryRun)
+		if err != nil {
+			return fmt.Errorf("claude hooks: %w", err)
+		}
+		anyChange = anyChange || changed
 	}
 
-	// 3. tmux keybindings
-	tmuxChanged, err := setupTmuxKeybindings(*dryRun)
-	if err != nil {
-		return fmt.Errorf("tmux config: %w", err)
+	if wantCodex {
+		changed, err := setupCodexHooks(*dryRun)
+		if err != nil {
+			return fmt.Errorf("codex hooks: %w", err)
+		}
+		anyChange = anyChange || changed
 	}
-	if tmuxChanged {
-		anyChange = true
+
+	if wantClaude || wantCodex {
+		shellChanged, err := setupShellFunctions(*dryRun)
+		if err != nil {
+			return fmt.Errorf("shell functions: %w", err)
+		}
+		tmuxChanged, err := setupTmuxKeybindings(*dryRun)
+		if err != nil {
+			return fmt.Errorf("tmux config: %w", err)
+		}
+		anyChange = anyChange || shellChanged || tmuxChanged
 	}
 
 	if !anyChange {
@@ -509,17 +665,45 @@ func cmdSetup(args []string) error {
 	} else if *dryRun {
 		fmt.Println("\nRun 'cc-pane setup' (without --dry-run) to apply.")
 	} else {
-		fmt.Println("\nSetup complete. Restart Claude Code sessions for hooks to take effect.")
+		fmt.Println("\nSetup complete. Restart agent sessions for hooks to take effect.")
 	}
 	return nil
 }
 
+func claudeInstalled() bool {
+	return agentInstalled(claudeSettingsPath(), "claude")
+}
+
+// setupCodexHooks wraps mergeCodexHooks with stdout messages mirroring
+// setupClaudeHooks so users can tell at a glance whether the Codex side ran,
+// already idempotent, or was a dry-run.
+func setupCodexHooks(dryRun bool) (bool, error) {
+	path := codexConfigPath()
+	changed, err := mergeCodexHooks(path, dryRun)
+	if err != nil {
+		return changed, err
+	}
+	if !changed {
+		fmt.Println("  ✓ Codex hooks already configured")
+		return false, nil
+	}
+	if dryRun {
+		fmt.Println("  ~ Would add cc-pane hooks to", path)
+		return true, nil
+	}
+	fmt.Printf("  ✓ Added cc-pane hooks to %s (backup: %s)\n", path, path+bakSuffix)
+	return true, nil
+}
+
 func setupClaudeHooks(dryRun bool) (bool, error) {
 	path := claudeSettingsPath()
+	if err := refuseSymlink(path); err != nil {
+		return false, err
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Create minimal settings with hooks
 			data = []byte("{}")
 		} else {
 			return false, fmt.Errorf("read %s: %w", path, err)
@@ -542,10 +726,9 @@ func setupClaudeHooks(dryRun bool) (bool, error) {
 		return true, nil
 	}
 
-	// Backup before writing
-	backupPath := path + ".bak"
-	if err := os.WriteFile(backupPath, data, 0o644); err != nil {
-		return false, fmt.Errorf("backup %s: %w", backupPath, err)
+	bakPath := path + bakSuffix
+	if err := os.WriteFile(bakPath, data, 0o644); err != nil {
+		return false, fmt.Errorf("backup %s: %w", bakPath, err)
 	}
 
 	out, err := json.MarshalIndent(settings, "", "  ")
@@ -558,7 +741,7 @@ func setupClaudeHooks(dryRun bool) (bool, error) {
 		return false, fmt.Errorf("write %s: %w", path, err)
 	}
 
-	fmt.Printf("  ✓ Added cc-pane hooks to %s (backup: %s)\n", path, backupPath)
+	fmt.Printf("  ✓ Added cc-pane hooks to %s (backup: %s)\n", path, bakPath)
 	return true, nil
 }
 
@@ -583,7 +766,7 @@ func mergeHooks(settings map[string]any) bool {
 			"hooks": []any{
 				map[string]any{
 					"type":    "command",
-					"command": fmt.Sprintf("cc-pane update-state --event %s", event),
+					"command": fmt.Sprintf("cc-pane update-state --event %s --agent claude", event),
 					"async":   true,
 				},
 			},
@@ -754,22 +937,19 @@ func cmdUninstall(args []string) error {
 		return err
 	}
 
-	// 1. Remove hooks from settings.json
 	if err := uninstallClaudeHooks(); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! claude hooks: %v\n", err)
 	}
-
-	// 2. Remove shell functions
+	if _, err := removeCodexHooks(codexConfigPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "  ! codex hooks: %v\n", err)
+	}
 	if err := uninstallShellFunctions(); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! shell functions: %v\n", err)
 	}
-
-	// 3. Remove tmux keybindings
 	if err := uninstallTmuxKeybindings(); err != nil {
 		fmt.Fprintf(os.Stderr, "  ! tmux config: %v\n", err)
 	}
 
-	// 4. Optionally remove state directory
 	if *purge {
 		dir := stateDir()
 		if err := os.RemoveAll(dir); err != nil {
@@ -779,7 +959,6 @@ func cmdUninstall(args []string) error {
 		}
 	}
 
-	// Check if source line remains in shell rc
 	for _, rcPath := range shellRcPaths() {
 		data, err := os.ReadFile(rcPath)
 		if err != nil {
@@ -833,39 +1012,49 @@ func removeHookEntries(hooks map[string]any) bool {
 
 func uninstallClaudeHooks() error {
 	path := claudeSettingsPath()
+	if err := refuseSymlink(path); err != nil {
+		return err
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", path, err)
 	}
 
 	var settings map[string]any
 	if err := json.Unmarshal(data, &settings); err != nil {
-		return err
+		return fmt.Errorf("parse %s: %w", path, err)
 	}
 
-	hooks, ok := settings["hooks"].(map[string]any)
-	if !ok {
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
 		fmt.Println("  ✓ No hooks to remove")
 		return nil
 	}
 
-	changed := removeHookEntries(hooks)
-
-	if !changed {
+	if !removeHookEntries(hooks) {
 		fmt.Println("  ✓ No cc-pane hooks found")
 		return nil
 	}
 
+	bakPath := path + bakSuffix
+	if err := os.WriteFile(bakPath, data, 0o644); err != nil {
+		return fmt.Errorf("backup %s: %w", bakPath, err)
+	}
+
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal settings: %w", err)
 	}
 	out = append(out, '\n')
 
 	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return err
+		return fmt.Errorf("write %s: %w", path, err)
 	}
-	fmt.Printf("  ✓ Removed cc-pane hooks from %s\n", path)
+	fmt.Printf("  ✓ Removed cc-pane hooks from %s (backup: %s)\n", path, bakPath)
 	return nil
 }
 

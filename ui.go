@@ -81,6 +81,18 @@ func stateLabel(ps *PaneState) string {
 	return ps.State
 }
 
+// agentLabel returns the short 2-char display label for an agent.
+func agentLabel(agent string) string {
+	switch agent {
+	case AgentClaude:
+		return "CC"
+	case AgentCodex:
+		return "CX"
+	default:
+		return "??"
+	}
+}
+
 func isColorTerminal() bool {
 	if os.Getenv("NO_COLOR") != "" {
 		return false
@@ -132,8 +144,8 @@ func truncate(s string, maxLen int) string {
 // renderTable prints pane states as a formatted table.
 func renderTable(states []*PaneState, useColor bool) {
 	if len(states) == 0 {
-		fmt.Println("No Claude Code sessions found.")
-		if !hooksConfigured() {
+		fmt.Println("No agent sessions found.")
+		if !claudeHooksConfigured() {
 			fmt.Println("\nHooks are not configured. Run 'cc-pane doctor' for setup instructions.")
 		}
 		return
@@ -141,14 +153,14 @@ func renderTable(states []*PaneState, useColor bool) {
 
 	// Emoji icons are 2 display columns but 4 bytes — avoid %-Ns formatting for them.
 	// Use manual padding: icon + space, then fixed-width ASCII columns.
-	header := fmt.Sprintf("   %-18s %-22s %-14s %-6s %-40s %s",
-		"STATE", "SESSION", "WINDOW", "PANE", "CWD", "UPDATED")
+	header := fmt.Sprintf("   %-18s %-6s %-22s %-14s %-6s %-40s %s",
+		"STATE", "AGENT", "SESSION", "WINDOW", "PANE", "CWD", "UPDATED")
 	if useColor {
 		fmt.Printf("%s%s%s\n", colorBold, header, colorReset)
 	} else {
 		fmt.Println(header)
 	}
-	fmt.Println(strings.Repeat("─", 109))
+	fmt.Println(strings.Repeat("─", len(header)))
 
 	for _, ps := range states {
 		icon := paneIcon(ps)
@@ -156,10 +168,11 @@ func renderTable(states []*PaneState, useColor bool) {
 		updated := formatRelativeTime(ps.LastUpdatedAt)
 		session := truncate(ps.Session, 20)
 		label := stateLabel(ps)
+		agent := agentLabel(ps.Agent)
 
 		win := truncate(ps.WindowIndex+":"+ps.WindowName, 12)
-		line := fmt.Sprintf("%s %-18s %-22s %-14s %-6s %-40s %s",
-			icon, label, session, win, ps.PaneID, cwd, updated)
+		line := fmt.Sprintf("%s %-18s %-6s %-22s %-14s %-6s %-40s %s",
+			icon, label, agent, session, win, ps.PaneID, cwd, updated)
 
 		if useColor {
 			c := paneColor(ps)
@@ -175,7 +188,10 @@ func renderTable(states []*PaneState, useColor bool) {
 }
 
 // renderTSV outputs states as tab-separated values for piping to other tools.
-// First field is pane_id (for extraction), remaining fields are padded for display.
+// Field 1 is pane_id (for extraction), field 2 is the short agent label
+// (CC / CX / ??), remaining fields are padded for display. Downstream
+// pipelines that need the canonical agent name (claude / codex / unknown)
+// should use --json which preserves it via the JSON tag.
 func renderTSV(states []*PaneState) {
 	for _, ps := range states {
 		icon := paneIcon(ps)
@@ -184,10 +200,11 @@ func renderTSV(states []*PaneState) {
 		session := truncate(ps.Session, 22)
 		preview := truncate(ps.Preview, 40)
 		label := stateLabel(ps)
+		agent := agentLabel(ps.Agent)
 
 		win := truncate(ps.WindowIndex+":"+ps.WindowName, 14)
-		fmt.Fprintf(os.Stdout, "%s\t%s %-16s\t%-22s\t%-14s\t%-42s\t%-10s\t%s\n",
-			ps.PaneID, icon, label, session, win, cwd, updated, preview)
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%s %-16s\t%-22s\t%-14s\t%-42s\t%-10s\t%s\n",
+			ps.PaneID, agent, icon, label, session, win, cwd, updated, preview)
 	}
 }
 
