@@ -98,6 +98,8 @@ func TestStatePriority(t *testing.T) {
 func TestSortPriority(t *testing.T) {
 	now := time.Now().Format(time.RFC3339)
 	stale := time.Now().Add(-11 * time.Minute).Format(time.RFC3339)
+	// staleApproval: beyond approvalWaitingStaleThreshold but below waitingInputStaleThreshold
+	staleApproval := time.Now().Add(-(approvalWaitingStaleThreshold + 1*time.Minute)).Format(time.RFC3339)
 
 	tests := []struct {
 		name     string
@@ -105,7 +107,8 @@ func TestSortPriority(t *testing.T) {
 		expected int
 	}{
 		{"approval_waiting", &PaneState{State: StateApprovalWaiting, LastUpdatedAt: now}, 0},
-		{"stale approval_waiting -> degraded to recent rank", &PaneState{State: StateApprovalWaiting, LastUpdatedAt: stale}, 1},
+		{"stale approval_waiting -> degraded to recent rank", &PaneState{State: StateApprovalWaiting, LastUpdatedAt: staleApproval}, 1},
+		{"stale approval_waiting beyond waiting_input threshold -> stale rank", &PaneState{State: StateApprovalWaiting, LastUpdatedAt: stale}, 3},
 		{"recent waiting_input", &PaneState{State: StateWaitingInput, LastUpdatedAt: now}, 1},
 		{"running", &PaneState{State: StateRunning, LastUpdatedAt: now}, 2},
 		{"stale waiting_input", &PaneState{State: StateWaitingInput, LastUpdatedAt: stale}, 3},

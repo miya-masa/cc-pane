@@ -46,6 +46,18 @@ func isStaleApproval(ps *PaneState) bool {
 	return time.Since(t) > approvalWaitingStaleThreshold
 }
 
+// effectiveState returns the display-layer state for a pane.
+// Stale approval_waiting is degraded to waiting_input for all display/output/sorting
+// surfaces so that the user sees a consistent picture.
+// This function must ONLY be used for display, output, and sorting — never for
+// writing state files or determining raw state.
+func effectiveState(ps *PaneState) string {
+	if isStaleApproval(ps) {
+		return StateWaitingInput
+	}
+	return ps.State
+}
+
 // stateIcon returns a Unicode icon for the state.
 func stateIcon(state string) string {
 	switch state {
@@ -62,13 +74,10 @@ func stateIcon(state string) string {
 
 // paneIcon returns a Unicode icon considering staleness.
 func paneIcon(ps *PaneState) string {
-	if isStaleApproval(ps) {
-		return "🟡"
-	}
 	if isStaleWaiting(ps) {
 		return "⚪"
 	}
-	return stateIcon(ps.State)
+	return stateIcon(effectiveState(ps))
 }
 
 func stateColor(state string) string {
@@ -86,21 +95,20 @@ func stateColor(state string) string {
 
 // paneColor returns the ANSI color considering staleness.
 func paneColor(ps *PaneState) string {
-	if isStaleApproval(ps) {
-		return colorYellow
-	}
 	if isStaleWaiting(ps) {
 		return colorDim
 	}
-	return stateColor(ps.State)
+	return stateColor(effectiveState(ps))
 }
 
 // stateLabel returns the state string with a background agent suffix if applicable.
+// Uses effectiveState so that stale approval_waiting displays as waiting_input.
 func stateLabel(ps *PaneState) string {
+	label := effectiveState(ps)
 	if ps.BackgroundAgents > 0 {
-		return fmt.Sprintf("%s (+%d bg)", ps.State, ps.BackgroundAgents)
+		return fmt.Sprintf("%s (+%d bg)", label, ps.BackgroundAgents)
 	}
-	return ps.State
+	return label
 }
 
 // agentLabel returns the short 2-char display label for an agent.
@@ -235,13 +243,9 @@ func renderTSV(states []*PaneState) {
 func formatStatus(states []*PaneState) string {
 	var approval, running, waiting, stale int
 	for _, ps := range states {
-		switch ps.State {
+		switch effectiveState(ps) {
 		case StateApprovalWaiting:
-			if isStaleApproval(ps) {
-				waiting++
-			} else {
-				approval++
-			}
+			approval++
 		case StateRunning:
 			running++
 		case StateWaitingInput:
@@ -270,11 +274,19 @@ func formatStatus(states []*PaneState) string {
 }
 
 // renderJSON outputs states as JSON to stdout.
+// Applies effectiveState to each pane so that stale approval_waiting is output
+// as waiting_input. Original PaneState values are never mutated.
 func renderJSON(states []*PaneState) error {
 	if states == nil {
 		states = []*PaneState{}
 	}
+	out := make([]*PaneState, len(states))
+	for i, ps := range states {
+		copy := *ps
+		copy.State = effectiveState(ps)
+		out[i] = &copy
+	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
-	return enc.Encode(states)
+	return enc.Encode(out)
 }

@@ -88,12 +88,10 @@ const approvalWaitingStaleThreshold = 2 * time.Minute
 
 // sortPriority returns display priority considering both state and staleness.
 // Stale waiting_input sessions are ranked below running sessions.
+// Uses effectiveState so that stale approval_waiting is ranked as waiting_input.
 func sortPriority(ps *PaneState) int {
-	switch ps.State {
+	switch effectiveState(ps) {
 	case StateApprovalWaiting:
-		if isStaleApproval(ps) {
-			return 1 // stale approval: degraded to recent waiting_input rank
-		}
 		return 0
 	case StateWaitingInput:
 		t, err := time.Parse(time.RFC3339, ps.LastUpdatedAt)
