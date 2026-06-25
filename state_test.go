@@ -98,6 +98,8 @@ func TestStatePriority(t *testing.T) {
 func TestSortPriority(t *testing.T) {
 	now := time.Now().Format(time.RFC3339)
 	stale := time.Now().Add(-11 * time.Minute).Format(time.RFC3339)
+	// staleApproval: beyond approvalWaitingStaleThreshold but below waitingInputStaleThreshold
+	staleApproval := time.Now().Add(-(approvalWaitingStaleThreshold + 1*time.Minute)).Format(time.RFC3339)
 
 	tests := []struct {
 		name     string
@@ -105,6 +107,8 @@ func TestSortPriority(t *testing.T) {
 		expected int
 	}{
 		{"approval_waiting", &PaneState{State: StateApprovalWaiting, LastUpdatedAt: now}, 0},
+		{"stale approval_waiting -> degraded to recent rank", &PaneState{State: StateApprovalWaiting, LastUpdatedAt: staleApproval}, 1},
+		{"stale approval_waiting beyond waiting_input threshold -> stale rank", &PaneState{State: StateApprovalWaiting, LastUpdatedAt: stale}, 3},
 		{"recent waiting_input", &PaneState{State: StateWaitingInput, LastUpdatedAt: now}, 1},
 		{"running", &PaneState{State: StateRunning, LastUpdatedAt: now}, 2},
 		{"stale waiting_input", &PaneState{State: StateWaitingInput, LastUpdatedAt: stale}, 3},
@@ -1026,6 +1030,20 @@ func TestDetermineState(t *testing.T) {
 			expected: StateWaitingInput,
 		},
 		{
+			name:     "Stop user_interrupted (past tense, actual binary value) -> waiting_input",
+			event:    "Stop",
+			data:     map[string]any{"stop_reason": "user_interrupted"},
+			existing: nil,
+			expected: StateWaitingInput,
+		},
+		{
+			name:     "Stop user_interrupted with bg agents -> waiting_input",
+			event:    "Stop",
+			data:     map[string]any{"stop_reason": "user_interrupted"},
+			existing: &PaneState{BackgroundAgents: 3},
+			expected: StateWaitingInput,
+		},
+		{
 			name:     "Unknown event -> no change",
 			event:    "SomeNewEvent",
 			data:     nil,
@@ -1122,6 +1140,12 @@ func TestIsUserInterrupt(t *testing.T) {
 		{
 			name:     "user_interrupt",
 			data:     map[string]any{"stop_reason": "user_interrupt"},
+			expected: true,
+		},
+		{
+			// Claude binary 2.1.193 uses past tense "user_interrupted"
+			name:     "user_interrupted (actual binary value)",
+			data:     map[string]any{"stop_reason": "user_interrupted"},
 			expected: true,
 		},
 		{
