@@ -286,3 +286,193 @@ func TestFormatStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestIsStaleApproval(t *testing.T) {
+	now := time.Now().Format(time.RFC3339)
+	recent := time.Now().Add(-1 * time.Minute).Format(time.RFC3339)
+	stale := time.Now().Add(-3 * time.Minute).Format(time.RFC3339)
+
+	tests := []struct {
+		name     string
+		ps       *PaneState
+		expected bool
+	}{
+		{
+			name:     "approval_waiting recent -> not stale",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: now},
+			expected: false,
+		},
+		{
+			name:     "approval_waiting just under threshold -> not stale",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: recent},
+			expected: false,
+		},
+		{
+			name:     "approval_waiting over threshold -> stale",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: stale},
+			expected: true,
+		},
+		{
+			name:     "approval_waiting unparseable LastUpdatedAt -> stale",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: "not-a-time"},
+			expected: true,
+		},
+		{
+			name:     "waiting_input over threshold -> not stale (different state)",
+			ps:       &PaneState{State: StateWaitingInput, LastUpdatedAt: stale},
+			expected: false,
+		},
+		{
+			name:     "running -> not stale",
+			ps:       &PaneState{State: StateRunning, LastUpdatedAt: stale},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isStaleApproval(tt.ps)
+			if got != tt.expected {
+				t.Errorf("isStaleApproval() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestPaneIconStaleApproval(t *testing.T) {
+	now := time.Now().Format(time.RFC3339)
+	stale := time.Now().Add(-3 * time.Minute).Format(time.RFC3339)
+
+	tests := []struct {
+		name     string
+		ps       *PaneState
+		expected string
+	}{
+		{
+			name:     "fresh approval_waiting -> red",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: now},
+			expected: "🔴",
+		},
+		{
+			name:     "stale approval_waiting -> yellow (degraded to waiting_input)",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: stale},
+			expected: "🟡",
+		},
+		{
+			name:     "stale approval_waiting unparseable -> yellow",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: "bad"},
+			expected: "🟡",
+		},
+		{
+			name:     "running -> green",
+			ps:       &PaneState{State: StateRunning, LastUpdatedAt: now},
+			expected: "🟢",
+		},
+		{
+			name:     "stale waiting_input -> white (existing behavior)",
+			ps:       &PaneState{State: StateWaitingInput, LastUpdatedAt: time.Now().Add(-11 * time.Minute).Format(time.RFC3339)},
+			expected: "⚪",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := paneIcon(tt.ps)
+			if got != tt.expected {
+				t.Errorf("paneIcon() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestPaneColorStaleApproval(t *testing.T) {
+	now := time.Now().Format(time.RFC3339)
+	stale := time.Now().Add(-3 * time.Minute).Format(time.RFC3339)
+
+	tests := []struct {
+		name     string
+		ps       *PaneState
+		expected string
+	}{
+		{
+			name:     "fresh approval_waiting -> red+bold",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: now},
+			expected: colorRed + colorBold,
+		},
+		{
+			name:     "stale approval_waiting -> yellow",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: stale},
+			expected: colorYellow,
+		},
+		{
+			name:     "stale approval_waiting unparseable -> yellow",
+			ps:       &PaneState{State: StateApprovalWaiting, LastUpdatedAt: "bad"},
+			expected: colorYellow,
+		},
+		{
+			name:     "running -> green",
+			ps:       &PaneState{State: StateRunning, LastUpdatedAt: now},
+			expected: colorGreen,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := paneColor(tt.ps)
+			if got != tt.expected {
+				t.Errorf("paneColor() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFormatStatusStaleApproval(t *testing.T) {
+	now := time.Now().Format(time.RFC3339)
+	stale := time.Now().Add(-3 * time.Minute).Format(time.RFC3339)
+
+	tests := []struct {
+		name     string
+		states   []*PaneState
+		expected string
+	}{
+		{
+			name: "stale approval counts as waiting (yellow), not approval (red)",
+			states: []*PaneState{
+				{State: StateApprovalWaiting, LastUpdatedAt: stale},
+			},
+			expected: "🟡1",
+		},
+		{
+			name: "fresh approval counts as approval (red)",
+			states: []*PaneState{
+				{State: StateApprovalWaiting, LastUpdatedAt: now},
+			},
+			expected: "🔴1",
+		},
+		{
+			name: "mixed: fresh approval + stale approval",
+			states: []*PaneState{
+				{State: StateApprovalWaiting, LastUpdatedAt: now},
+				{State: StateApprovalWaiting, LastUpdatedAt: stale},
+			},
+			expected: "🔴1 🟡1",
+		},
+		{
+			name: "stale approval + running",
+			states: []*PaneState{
+				{State: StateApprovalWaiting, LastUpdatedAt: stale},
+				{State: StateRunning, LastUpdatedAt: now},
+			},
+			expected: "🟡1 🟢1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatStatus(tt.states)
+			if got != tt.expected {
+				t.Errorf("formatStatus() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}

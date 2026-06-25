@@ -219,7 +219,7 @@ func cmdShow(args []string) error {
 	ps := findStateByPaneID(*paneID)
 	if ps != nil {
 		fmt.Println("--- State ---")
-		fmt.Printf("state:   %s %s\n", stateIcon(ps.State), stateLabel(ps))
+		fmt.Printf("state:   %s %s\n", paneIcon(ps), stateLabel(ps))
 		fmt.Printf("session: %s:%s\n", ps.Session, ps.WindowIndex)
 		fmt.Printf("pane:    %s\n", ps.PaneID)
 		if ps.Cwd != "" {

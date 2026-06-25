@@ -78,11 +78,22 @@ func StatePriority(state string) int {
 // is considered stale and sorted below running sessions.
 const waitingInputStaleThreshold = 10 * time.Minute
 
+// approvalWaitingStaleThreshold is the duration after which an approval_waiting
+// session is considered stale and displayed as waiting_input (🟡) instead of
+// approval (🔴). This is shorter than waitingInputStaleThreshold because
+// approval dialogs require immediate user action; if the state persists beyond
+// this window the prompt was likely cancelled via Esc/Ctrl-C without a Stop
+// hook firing (by design: "Stop hooks do not fire on user interrupts").
+const approvalWaitingStaleThreshold = 2 * time.Minute
+
 // sortPriority returns display priority considering both state and staleness.
 // Stale waiting_input sessions are ranked below running sessions.
 func sortPriority(ps *PaneState) int {
 	switch ps.State {
 	case StateApprovalWaiting:
+		if isStaleApproval(ps) {
+			return 1 // stale approval: degraded to recent waiting_input rank
+		}
 		return 0
 	case StateWaitingInput:
 		t, err := time.Parse(time.RFC3339, ps.LastUpdatedAt)
@@ -379,9 +390,11 @@ func isBackgroundAgentLaunch(event string, data map[string]any) bool {
 }
 
 // isUserInterrupt checks if a Stop event was triggered by the user (Escape key).
+// The actual value emitted by Claude binary 2.1.193 is "user_interrupted" (past
+// tense); "user_interrupt" is kept for backward compatibility with older versions.
 func isUserInterrupt(data map[string]any) bool {
 	reason, _ := data["stop_reason"].(string)
-	return reason == "user_interrupt"
+	return reason == "user_interrupted" || reason == "user_interrupt"
 }
 
 // hasPendingWork reports whether the pane has outstanding background work.

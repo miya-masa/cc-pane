@@ -30,6 +30,22 @@ func isStaleWaiting(ps *PaneState) bool {
 	return time.Since(t) > waitingInputStaleThreshold
 }
 
+// isStaleApproval reports whether the pane is a stale approval_waiting session.
+// An approval_waiting pane becomes stale when it has not been updated for
+// approvalWaitingStaleThreshold. This handles the case where a user cancels an
+// approval dialog via Esc/Ctrl-C: Claude does not fire a Stop hook on user
+// interrupts, so the state would otherwise remain approval_waiting indefinitely.
+func isStaleApproval(ps *PaneState) bool {
+	if ps.State != StateApprovalWaiting {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, ps.LastUpdatedAt)
+	if err != nil {
+		return true
+	}
+	return time.Since(t) > approvalWaitingStaleThreshold
+}
+
 // stateIcon returns a Unicode icon for the state.
 func stateIcon(state string) string {
 	switch state {
@@ -46,6 +62,9 @@ func stateIcon(state string) string {
 
 // paneIcon returns a Unicode icon considering staleness.
 func paneIcon(ps *PaneState) string {
+	if isStaleApproval(ps) {
+		return "🟡"
+	}
 	if isStaleWaiting(ps) {
 		return "⚪"
 	}
@@ -67,6 +86,9 @@ func stateColor(state string) string {
 
 // paneColor returns the ANSI color considering staleness.
 func paneColor(ps *PaneState) string {
+	if isStaleApproval(ps) {
+		return colorYellow
+	}
 	if isStaleWaiting(ps) {
 		return colorDim
 	}
@@ -215,7 +237,11 @@ func formatStatus(states []*PaneState) string {
 	for _, ps := range states {
 		switch ps.State {
 		case StateApprovalWaiting:
-			approval++
+			if isStaleApproval(ps) {
+				waiting++
+			} else {
+				approval++
+			}
 		case StateRunning:
 			running++
 		case StateWaitingInput:
