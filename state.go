@@ -2,12 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -136,6 +138,41 @@ func stateFilePath(session, windowIndex, paneID string) string {
 	return filepath.Join(stateDir(), name)
 }
 
+const stateLockFileName = ".cc-pane.lock"
+
+func stateLockPath() string {
+	return filepath.Join(stateDir(), stateLockFileName)
+}
+
+// withStateLock serializes state writes and conditional cleanup across processes.
+func withStateLock(fn func() error) (err error) {
+	if err := ensureStateDir(); err != nil {
+		return fmt.Errorf("create state dir: %w", err)
+	}
+
+	lockFile, err := os.OpenFile(stateLockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("open state lock: %w", err)
+	}
+	locked := false
+	defer func() {
+		if locked {
+			if unlockErr := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); unlockErr != nil {
+				err = errors.Join(err, fmt.Errorf("unlock state lock: %w", unlockErr))
+			}
+		}
+		if closeErr := lockFile.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close state lock: %w", closeErr))
+		}
+	}()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("lock state lock: %w", err)
+	}
+	locked = true
+	return fn()
+}
+
 func writeState(ps *PaneState) error {
 	return writeStateAt(ps, time.Now())
 }
@@ -146,9 +183,6 @@ func writeStateAt(ps *PaneState, now time.Time) error {
 	default:
 		return fmt.Errorf("writeState: invalid Agent %q", ps.Agent)
 	}
-	if err := ensureStateDir(); err != nil {
-		return fmt.Errorf("create state dir: %w", err)
-	}
 	ps.LastUpdatedAt = now.Format(time.RFC3339)
 
 	data, err := json.MarshalIndent(ps, "", "  ")
@@ -158,7 +192,12 @@ func writeStateAt(ps *PaneState, now time.Time) error {
 	data = append(data, '\n')
 
 	path := stateFilePath(ps.Session, ps.WindowIndex, ps.PaneID)
-	return os.WriteFile(path, data, 0o644)
+	return withStateLock(func() error {
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return fmt.Errorf("write state %s: %w", path, err)
+		}
+		return nil
+	})
 }
 
 func readState(path string) (*PaneState, error) {
@@ -330,6 +369,11 @@ func determineState(event string, data map[string]any, existing *PaneState) stri
 			}
 		}
 		return StateRunning
+	case "PostToolUseFailure":
+		if isToolFailureInterrupt(data) {
+			return StateWaitingInput
+		}
+		return StateRunning
 	case "PreCompact", "PostCompact":
 		return StateRunning
 	case "PermissionRequest":
@@ -395,6 +439,12 @@ func isUserInterrupt(data map[string]any) bool {
 	return reason == "user_interrupted" || reason == "user_interrupt"
 }
 
+// isToolFailureInterrupt checks whether a failed tool use was cancelled by the user.
+func isToolFailureInterrupt(data map[string]any) bool {
+	isInterrupt, _ := data["is_interrupt"].(bool)
+	return isInterrupt
+}
+
 // hasPendingWork reports whether the pane has outstanding background work.
 func hasPendingWork(ps *PaneState) bool {
 	return ps != nil && ps.BackgroundAgents > 0
@@ -418,7 +468,8 @@ func shouldResetStaleAgents(ps *PaneState) bool {
 	return time.Since(t) > backgroundAgentTimeout
 }
 
-// cleanupDeadPanes removes state files for panes that no longer exist in tmux.
+// cleanupDeadPanes removes state files for panes that no longer exist in tmux
+// and Codex states whose panes have returned to a non-Codex process.
 // If panes is nil, it queries tmux for the current pane list.
 func cleanupDeadPanes(states []*PaneState, panes []TmuxPane) []*PaneState {
 	if panes == nil {
@@ -429,16 +480,18 @@ func cleanupDeadPanes(states []*PaneState, panes []TmuxPane) []*PaneState {
 		}
 	}
 
-	activeIDs := make(map[string]bool, len(panes))
+	activePanes := make(map[paneLocation]TmuxPane, len(panes))
 	for _, p := range panes {
-		activeIDs[p.PaneID] = true
+		activePanes[paneLocationFromPane(p)] = p
 	}
 
 	var result []*PaneState
 	for _, ps := range states {
-		if !activeIDs[ps.PaneID] {
-			path := stateFilePath(ps.Session, ps.WindowIndex, ps.PaneID)
-			os.Remove(path)
+		pane, active := activePanes[paneLocationFromState(ps)]
+		if !active || ps.Agent == AgentCodex && !isCodexPane(pane) {
+			if _, err := removeStateIfUnchanged(ps); err != nil {
+				fmt.Fprintf(os.Stderr, "cc-pane: warn: remove stale state %s: %v\n", stateFilePath(ps.Session, ps.WindowIndex, ps.PaneID), err)
+			}
 			continue
 		}
 		result = append(result, ps)
@@ -451,9 +504,9 @@ func overlayLiveCodexPanes(states []*PaneState, panes []TmuxPane, now time.Time)
 		return states
 	}
 
-	byPaneID := make(map[string]int, len(states))
+	byLocation := make(map[paneLocation]int, len(states))
 	for i, ps := range states {
-		byPaneID[ps.PaneID] = i
+		byLocation[paneLocationFromState(ps)] = i
 	}
 
 	for _, pane := range panes {
@@ -463,13 +516,14 @@ func overlayLiveCodexPanes(states []*PaneState, panes []TmuxPane, now time.Time)
 
 		ps := newLiveCodexState(pane, now)
 
-		if idx, ok := byPaneID[pane.PaneID]; ok {
+		location := paneLocationFromPane(pane)
+		if idx, ok := byLocation[location]; ok {
 			mergeExistingLiveCodexState(ps, states[idx], pane)
 			states[idx] = ps
 			continue
 		}
 
-		byPaneID[pane.PaneID] = len(states)
+		byLocation[location] = len(states)
 		states = append(states, ps)
 	}
 
@@ -498,6 +552,45 @@ func newLiveCodexState(pane TmuxPane, now time.Time) *PaneState {
 		Cwd:           pane.Cwd,
 		Branch:        getGitBranch(pane.Cwd),
 	}
+}
+
+type paneLocation struct {
+	session     string
+	windowIndex string
+	paneID      string
+}
+
+func paneLocationFromState(ps *PaneState) paneLocation {
+	return paneLocation{session: ps.Session, windowIndex: ps.WindowIndex, paneID: ps.PaneID}
+}
+
+func paneLocationFromPane(pane TmuxPane) paneLocation {
+	return paneLocation{session: pane.Session, windowIndex: pane.WindowIndex, paneID: pane.PaneID}
+}
+
+// removeStateIfUnchanged removes a stale state only when the persisted state
+// still exactly matches the list snapshot that selected it for cleanup.
+func removeStateIfUnchanged(expected *PaneState) (bool, error) {
+	path := stateFilePath(expected.Session, expected.WindowIndex, expected.PaneID)
+	removed := false
+	err := withStateLock(func() error {
+		current, err := readState(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return fmt.Errorf("read state %s: %w", path, err)
+		}
+		if *current != *expected {
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove state %s: %w", path, err)
+		}
+		removed = true
+		return nil
+	})
+	return removed, err
 }
 
 func mergeExistingLiveCodexState(ps, existing *PaneState, pane TmuxPane) {
@@ -576,6 +669,10 @@ func buildPreview(event string, data map[string]any) string {
 			}
 		}
 		return "waiting for input"
+	case "PostToolUseFailure":
+		if isToolFailureInterrupt(data) {
+			return "waiting for input"
+		}
 	case "Notification":
 		if msg, ok := data["message"].(string); ok && msg != "" {
 			msg = strings.ReplaceAll(msg, "\n", " ")
