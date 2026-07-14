@@ -63,6 +63,8 @@ cc-pane setup
 
 Override the auto-detection with `--agent claude`, `--agent codex`, `--no-claude`, or `--no-codex`. Backups of any modified config are written next to the original as `<path>.cc-pane.bak` (changed in 0.2.0; see Known Limitations).
 
+After upgrading cc-pane, rerun `cc-pane setup` to register newly supported Claude hook events for existing users.
+
 This automatically:
 
 1. Adds cc-pane hooks to `~/.claude/settings.json` (existing hooks are preserved)
@@ -202,6 +204,7 @@ cc-pane ls --tsv | cut -f2 | sort | uniq -c
 | PostToolUse                        | `running`          | Tool completed                                |
 | PostToolUse (ExitPlanMode)         | `approval_waiting` | Plan mode waiting for user approval           |
 | PostToolUse (Agent, bg)            | `running`          | Background agent launched, counter incremented |
+| PostToolUseFailure (`is_interrupt: true`) | `waiting_input` | Tool cancelled by Ctrl-C, bg agent count reset |
 | PermissionRequest                  | `approval_waiting` | Waiting for user to approve a tool            |
 | PreCompact                         | `running`          | Context compaction starting                   |
 | PostCompact                        | `running`          | Context compaction completed                  |
@@ -228,7 +231,7 @@ When Claude Code dispatches background agents (`Agent` tool with `run_in_backgro
 - **Launch**: PostToolUse with `tool_name: "Agent"` and `tool_input.run_in_background: true` increments the counter
 - **Completion**: Non-permission/idle Notification decrements the counter
 - **Reset**: `UserPromptSubmit` resets the counter (new user turn)
-- **Interrupt reset**: `Stop` with `stop_reason: "user_interrupt"` resets the counter and transitions to `waiting_input`
+- **Interrupt reset**: `Stop` with `stop_reason: "user_interrupt"` or `PostToolUseFailure` with `is_interrupt: true` resets the counter and transitions to `waiting_input`
 - **Safety**: Counter is auto-reset after 30 minutes of no updates
 
 While background agents are pending, `Stop` events keep the state as `running` instead of transitioning to `waiting_input` (except for `user_interrupt`).

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func mustMkdir(t *testing.T, p string) {
@@ -20,6 +21,28 @@ func mustWrite(t *testing.T, p, content string) {
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func setCommandStdin(t *testing.T, input string) {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(input)); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	original := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = original
+		_ = r.Close()
+	})
 }
 
 func TestSetupAutoDetectClaudeOnly(t *testing.T) {
@@ -225,6 +248,150 @@ func TestApplyAgentSwitchReset(t *testing.T) {
 	}
 }
 
+func TestRemoveSessionEndStateIfOwned(t *testing.T) {
+	t.Run("keeps replacement written after owned snapshot", func(t *testing.T) {
+		t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+		old := &PaneState{
+			Agent: AgentClaude, Session: "main", WindowIndex: "0", PaneID: "%42", State: StateWaitingInput,
+		}
+		if err := writeStateAt(old, mustParseRFC3339(t, "2026-04-30T18:00:00Z")); err != nil {
+			t.Fatalf("write old state: %v", err)
+		}
+		snapshot := findStateByPaneIDForCurrentTmux(&TmuxPane{Session: "main", WindowIndex: "0", PaneID: "%42"})
+		if snapshot == nil {
+			t.Fatal("findStateByPaneIDForCurrentTmux returned nil")
+		}
+
+		replacement := &PaneState{
+			Agent: AgentClaude, Session: "main", WindowIndex: "0", PaneID: "%42", State: StateRunning,
+		}
+		if err := writeStateAt(replacement, mustParseRFC3339(t, "2026-04-30T18:01:00Z")); err != nil {
+			t.Fatalf("write replacement state: %v", err)
+		}
+
+		removeSessionEndStateIfOwned(snapshot, AgentClaude)
+
+		got, err := readState(stateFilePath("main", "0", "%42"))
+		if err != nil {
+			t.Fatalf("replacement state should remain: %v", err)
+		}
+		if *got != *replacement {
+			t.Fatalf("state = %#v, want replacement %#v", got, replacement)
+		}
+	})
+
+	t.Run("removes matching owned state", func(t *testing.T) {
+		t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+		state := &PaneState{
+			Agent: AgentClaude, Session: "main", WindowIndex: "0", PaneID: "%42", State: StateWaitingInput,
+		}
+		if err := writeStateAt(state, mustParseRFC3339(t, "2026-04-30T18:00:00Z")); err != nil {
+			t.Fatalf("write state: %v", err)
+		}
+
+		removeSessionEndStateIfOwned(state, AgentClaude)
+
+		if _, err := os.Stat(stateFilePath(state.Session, state.WindowIndex, state.PaneID)); !os.IsNotExist(err) {
+			t.Fatalf("state should be removed, stat err = %v", err)
+		}
+	})
+}
+
+func TestCmdUpdateStatePostToolUseFailureInterruptResetsBackgroundAgents(t *testing.T) {
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	mustMkdir(t, stateDir)
+	t.Setenv("CLAUDE_PANE_STATE_DIR", stateDir)
+
+	binDir := filepath.Join(tmp, "bin")
+	mustMkdir(t, binDir)
+	tmux := filepath.Join(binDir, "tmux")
+	mustWrite(t, tmux, "#!/bin/sh\nprintf '%s\\n' 'main\t0\tdev\t%42\tClaude\t/repo\t/dev/pts/1\tclaude'\n")
+	if err := os.Chmod(tmux, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("TMUX_PANE", "%42")
+
+	prior := &PaneState{
+		Agent:            AgentClaude,
+		Session:          "main",
+		WindowIndex:      "0",
+		PaneID:           "%42",
+		State:            StateRunning,
+		BackgroundAgents: 3,
+		Preview:          "bg agents: 3 running",
+	}
+	if err := writeState(prior); err != nil {
+		t.Fatalf("writeState: %v", err)
+	}
+	setCommandStdin(t, `{"is_interrupt":true}`)
+
+	if err := cmdUpdateState([]string{"--event", "PostToolUseFailure", "--agent", "claude"}); err != nil {
+		t.Fatalf("cmdUpdateState: %v", err)
+	}
+
+	got, err := readState(stateFilePath("main", "0", "%42"))
+	if err != nil {
+		t.Fatalf("readState: %v", err)
+	}
+	if got.State != StateWaitingInput {
+		t.Errorf("State = %q, want %q", got.State, StateWaitingInput)
+	}
+	if got.BackgroundAgents != 0 {
+		t.Errorf("BackgroundAgents = %d, want 0", got.BackgroundAgents)
+	}
+	if got.Preview != "waiting for input" {
+		t.Errorf("Preview = %q, want waiting for input", got.Preview)
+	}
+}
+
+func TestCmdUpdateStatePostToolUseFailureResetsStaleBackgroundAgentsButRemainsRunning(t *testing.T) {
+	tmp := t.TempDir()
+	stateDir := filepath.Join(tmp, "state")
+	mustMkdir(t, stateDir)
+	t.Setenv("CLAUDE_PANE_STATE_DIR", stateDir)
+
+	binDir := filepath.Join(tmp, "bin")
+	mustMkdir(t, binDir)
+	tmux := filepath.Join(binDir, "tmux")
+	mustWrite(t, tmux, "#!/bin/sh\nprintf '%s\\n' 'main\t0\tdev\t%42\tClaude\t/repo\t/dev/pts/1\tclaude'\n")
+	if err := os.Chmod(tmux, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	t.Setenv("TMUX_PANE", "%42")
+
+	prior := &PaneState{
+		Agent:            AgentClaude,
+		Session:          "main",
+		WindowIndex:      "0",
+		PaneID:           "%42",
+		State:            StateRunning,
+		BackgroundAgents: 3,
+		LastUpdatedAt:    time.Now().Add(-backgroundAgentTimeout - time.Minute).Format(time.RFC3339),
+	}
+	if err := writeStateAt(prior, mustParseRFC3339(t, prior.LastUpdatedAt)); err != nil {
+		t.Fatalf("writeStateAt: %v", err)
+	}
+	setCommandStdin(t, `{"is_interrupt":false}`)
+
+	if err := cmdUpdateState([]string{"--event", "PostToolUseFailure", "--agent", "claude"}); err != nil {
+		t.Fatalf("cmdUpdateState: %v", err)
+	}
+
+	got, err := readState(stateFilePath("main", "0", "%42"))
+	if err != nil {
+		t.Fatalf("readState: %v", err)
+	}
+	if got.State != StateRunning {
+		t.Errorf("State = %q, want %q", got.State, StateRunning)
+	}
+	if got.BackgroundAgents != 0 {
+		t.Errorf("BackgroundAgents = %d, want 0", got.BackgroundAgents)
+	}
+}
+
 func TestMergeHooksIncludesAgentFlag(t *testing.T) {
 	settings := map[string]any{}
 	if !mergeHooks(settings) {
@@ -242,6 +409,28 @@ func TestMergeHooksIncludesAgentFlag(t *testing.T) {
 		if !strings.Contains(cmd, "--agent claude") {
 			t.Errorf("event %s: command missing --agent claude: %q", event, cmd)
 		}
+	}
+}
+
+func TestMergeHooksRegistersPostToolUseFailure(t *testing.T) {
+	settings := map[string]any{}
+	if !mergeHooks(settings) {
+		t.Fatal("mergeHooks should report changes")
+	}
+
+	hooks := settings["hooks"].(map[string]any)
+	entries := toSlice(hooks["PostToolUseFailure"])
+	if len(entries) != 1 {
+		t.Fatalf("PostToolUseFailure entries = %v, want one cc-pane entry", entries)
+	}
+	entry := entries[0].(map[string]any)
+	inner := entry["hooks"].([]any)[0].(map[string]any)
+	command, _ := inner["command"].(string)
+	if !strings.Contains(command, "--event PostToolUseFailure") {
+		t.Errorf("command = %q, want PostToolUseFailure event", command)
+	}
+	if mergeHooks(settings) {
+		t.Error("second mergeHooks call should be idempotent")
 	}
 }
 

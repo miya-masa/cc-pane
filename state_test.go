@@ -2,11 +2,46 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func mustParseRFC3339(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		t.Fatalf("parse %q: %v", value, err)
+	}
+	return parsed
+}
+
+func captureStateStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := os.Stderr
+	os.Stderr = w
+	defer func() {
+		os.Stderr = original
+		_ = r.Close()
+	}()
+
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(output)
+}
 
 func TestNormalizeAgent(t *testing.T) {
 	tests := []struct {
@@ -547,6 +582,191 @@ func TestOverlayLiveCodexPanesReplacesStaleClaudeStateForSamePane(t *testing.T) 
 	}
 }
 
+func TestOverlayAndCleanupDeadPanesUsesPaneLocationIdentity(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+
+	old := &PaneState{
+		Agent:         AgentCodex,
+		Session:       "old",
+		WindowIndex:   "1",
+		PaneID:        "%10",
+		State:         StateWaitingInput,
+		LastUpdatedAt: "2026-04-30T18:00:00Z",
+	}
+	current := &PaneState{
+		Agent:         AgentCodex,
+		Session:       "main",
+		WindowIndex:   "0",
+		PaneID:        "%10",
+		State:         StateWaitingInput,
+		LastUpdatedAt: "2026-04-30T18:10:00Z",
+	}
+	for _, state := range []*PaneState{old, current} {
+		if err := writeStateAt(state, mustParseRFC3339(t, state.LastUpdatedAt)); err != nil {
+			t.Fatalf("writeStateAt: %v", err)
+		}
+	}
+
+	panes := []TmuxPane{{
+		Session: "main", WindowIndex: "0", PaneID: "%10", CurrentCommand: "codex",
+	}}
+	states := overlayLiveCodexPanes([]*PaneState{current, old}, panes, mustParseRFC3339(t, "2026-04-30T18:20:00Z"))
+	foundOldLocation := false
+	for _, state := range states {
+		if state.Session == old.Session && state.WindowIndex == old.WindowIndex && state.PaneID == old.PaneID {
+			foundOldLocation = true
+			break
+		}
+	}
+	if !foundOldLocation {
+		t.Fatal("overlayLiveCodexPanes should not replace a different location with the same pane ID")
+	}
+	got := cleanupDeadPanes(states, panes)
+
+	if len(got) != 1 || got[0].Session != "main" || got[0].WindowIndex != "0" {
+		t.Fatalf("cleanupDeadPanes() = %#v, want only current location", got)
+	}
+	if _, err := os.Stat(stateFilePath(old.Session, old.WindowIndex, old.PaneID)); !os.IsNotExist(err) {
+		t.Fatalf("old location state should be removed, stat err = %v", err)
+	}
+	if _, err := os.Stat(stateFilePath(current.Session, current.WindowIndex, current.PaneID)); err != nil {
+		t.Fatalf("current location state should remain: %v", err)
+	}
+}
+
+func TestCleanupDeadPanesDoesNotRemoveStateRewrittenAfterSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+
+	old := &PaneState{
+		Agent: AgentCodex, Session: "main", WindowIndex: "0", PaneID: "%10", State: StateWaitingInput,
+	}
+	if err := writeStateAt(old, mustParseRFC3339(t, "2026-04-30T18:00:00Z")); err != nil {
+		t.Fatalf("write old state: %v", err)
+	}
+	newState := &PaneState{
+		Agent: AgentClaude, Session: "main", WindowIndex: "0", PaneID: "%10", State: StateRunning,
+	}
+	if err := writeStateAt(newState, mustParseRFC3339(t, "2026-04-30T18:01:00Z")); err != nil {
+		t.Fatalf("write replacement state: %v", err)
+	}
+
+	got := cleanupDeadPanes([]*PaneState{old}, []TmuxPane{})
+	if len(got) != 0 {
+		t.Fatalf("cleanupDeadPanes() = %#v, want stale snapshot excluded", got)
+	}
+	persisted, err := readState(stateFilePath(newState.Session, newState.WindowIndex, newState.PaneID))
+	if err != nil {
+		t.Fatalf("replacement state should remain: %v", err)
+	}
+	if persisted.Agent != AgentClaude || persisted.State != StateRunning {
+		t.Fatalf("replacement state = %#v, want new Claude state", persisted)
+	}
+}
+
+func TestRemoveStateIfUnchanged(t *testing.T) {
+	t.Run("success removes matching snapshot and lock file stays hidden", func(t *testing.T) {
+		t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+		state := &PaneState{Agent: AgentCodex, Session: "main", WindowIndex: "0", PaneID: "%10", State: StateWaitingInput}
+		if err := writeStateAt(state, mustParseRFC3339(t, "2026-04-30T18:00:00Z")); err != nil {
+			t.Fatalf("writeStateAt: %v", err)
+		}
+
+		removed, err := removeStateIfUnchanged(state)
+		if err != nil {
+			t.Fatalf("removeStateIfUnchanged: %v", err)
+		}
+		if !removed {
+			t.Fatal("removeStateIfUnchanged should remove a matching state")
+		}
+		if _, err := os.Stat(stateFilePath(state.Session, state.WindowIndex, state.PaneID)); !os.IsNotExist(err) {
+			t.Fatalf("state file should be removed, stat err = %v", err)
+		}
+		states, err := listStates()
+		if err != nil {
+			t.Fatalf("listStates: %v", err)
+		}
+		if len(states) != 0 {
+			t.Fatalf("listStates() = %#v, want lock file excluded", states)
+		}
+	})
+
+	t.Run("mismatch preserves replacement state", func(t *testing.T) {
+		t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+		old := &PaneState{Agent: AgentCodex, Session: "main", WindowIndex: "0", PaneID: "%10", State: StateWaitingInput}
+		if err := writeStateAt(old, mustParseRFC3339(t, "2026-04-30T18:00:00Z")); err != nil {
+			t.Fatalf("write old state: %v", err)
+		}
+		replacement := &PaneState{Agent: AgentClaude, Session: "main", WindowIndex: "0", PaneID: "%10", State: StateRunning}
+		if err := writeStateAt(replacement, mustParseRFC3339(t, "2026-04-30T18:01:00Z")); err != nil {
+			t.Fatalf("write replacement state: %v", err)
+		}
+
+		removed, err := removeStateIfUnchanged(old)
+		if err != nil {
+			t.Fatalf("removeStateIfUnchanged: %v", err)
+		}
+		if removed {
+			t.Fatal("removeStateIfUnchanged should keep a changed state")
+		}
+		persisted, err := readState(stateFilePath(replacement.Session, replacement.WindowIndex, replacement.PaneID))
+		if err != nil {
+			t.Fatalf("read replacement state: %v", err)
+		}
+		if persisted.Agent != AgentClaude {
+			t.Fatalf("persisted Agent = %q, want %q", persisted.Agent, AgentClaude)
+		}
+	})
+
+	t.Run("missing state is a no-op", func(t *testing.T) {
+		t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+		expected := &PaneState{Agent: AgentClaude, Session: "main", WindowIndex: "0", PaneID: "%10"}
+
+		removed, err := removeStateIfUnchanged(expected)
+		if err != nil {
+			t.Fatalf("removeStateIfUnchanged: %v", err)
+		}
+		if removed {
+			t.Fatal("removeStateIfUnchanged should not report removal for a missing state")
+		}
+	})
+
+	t.Run("error returns lock open failure", func(t *testing.T) {
+		t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+		if err := os.Mkdir(stateLockPath(), 0o755); err != nil {
+			t.Fatalf("create lock directory: %v", err)
+		}
+
+		removed, err := removeStateIfUnchanged(&PaneState{Session: "main", WindowIndex: "0", PaneID: "%10"})
+		if err == nil {
+			t.Fatal("removeStateIfUnchanged should return the lock open error")
+		}
+		if removed {
+			t.Fatal("removeStateIfUnchanged should not report removal after a lock error")
+		}
+	})
+}
+
+func TestCleanupDeadPanesWarnsAndExcludesStaleSnapshotOnRemovalError(t *testing.T) {
+	t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+	if err := os.Mkdir(stateLockPath(), 0o755); err != nil {
+		t.Fatalf("create lock directory: %v", err)
+	}
+
+	stale := &PaneState{Agent: AgentCodex, Session: "main", WindowIndex: "0", PaneID: "%10", State: StateWaitingInput}
+	var got []*PaneState
+	output := captureStateStderr(t, func() {
+		got = cleanupDeadPanes([]*PaneState{stale}, []TmuxPane{})
+	})
+	if len(got) != 0 {
+		t.Fatalf("cleanupDeadPanes() = %#v, want stale snapshot excluded", got)
+	}
+	if !strings.Contains(output, "cc-pane: warn: remove stale state") {
+		t.Fatalf("cleanup warning = %q, want stale removal warning", output)
+	}
+}
+
 func TestPersistChangedCodexLiveStatesWritesMissingState(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
@@ -580,6 +800,38 @@ func TestPersistChangedCodexLiveStatesWritesMissingState(t *testing.T) {
 	}
 	if got.LastUpdatedAt != now.Format(time.RFC3339) {
 		t.Errorf("LastUpdatedAt = %q, want %q", got.LastUpdatedAt, now.Format(time.RFC3339))
+	}
+}
+
+func TestPersistChangedCodexLiveStatesWritesNewLocationForReusedPaneID(t *testing.T) {
+	t.Setenv("CLAUDE_PANE_STATE_DIR", t.TempDir())
+	now := mustParseRFC3339(t, "2026-04-30T18:30:00Z")
+	previous := []*PaneState{{
+		Agent:         AgentCodex,
+		Session:       "old",
+		WindowIndex:   "1",
+		PaneID:        "%10",
+		State:         StateWaitingInput,
+		LastUpdatedAt: "2026-04-30T18:00:00Z",
+	}}
+	current := []*PaneState{{
+		Agent:         AgentCodex,
+		Session:       "main",
+		WindowIndex:   "0",
+		PaneID:        "%10",
+		State:         StateWaitingInput,
+		LastUpdatedAt: now.Format(time.RFC3339),
+	}}
+
+	if err := persistChangedCodexLiveStates(previous, current, now); err != nil {
+		t.Fatalf("persistChangedCodexLiveStates: %v", err)
+	}
+	got, err := readState(stateFilePath("main", "0", "%10"))
+	if err != nil {
+		t.Fatalf("new location state should be written: %v", err)
+	}
+	if *got != *current[0] {
+		t.Fatalf("state = %#v, want %#v", got, current[0])
 	}
 }
 
@@ -789,6 +1041,93 @@ func TestCleanStaleStates_RemovesCorruptFiles(t *testing.T) {
 	}
 }
 
+func TestCleanupDeadPanes(t *testing.T) {
+	tests := []struct {
+		name              string
+		agent             string
+		pane              *TmuxPane
+		childHasCodex     bool
+		wantStateRetained bool
+	}{
+		{
+			name:  "removes Codex state when its pane returns to shell",
+			agent: AgentCodex,
+			pane:  &TmuxPane{Session: "main", WindowIndex: "0", PaneID: "%1", CurrentCommand: "zsh"},
+		},
+		{
+			name:              "keeps Codex state when Codex is the current command",
+			agent:             AgentCodex,
+			pane:              &TmuxPane{Session: "main", WindowIndex: "0", PaneID: "%1", CurrentCommand: "codex"},
+			wantStateRetained: true,
+		},
+		{
+			name:              "keeps Codex state when Codex is a child process",
+			agent:             AgentCodex,
+			pane:              &TmuxPane{Session: "main", WindowIndex: "0", PaneID: "%1", Tty: "/dev/pts/1", CurrentCommand: "node"},
+			childHasCodex:     true,
+			wantStateRetained: true,
+		},
+		{
+			name:              "keeps Claude state while its pane exists",
+			agent:             AgentClaude,
+			pane:              &TmuxPane{Session: "main", WindowIndex: "0", PaneID: "%1", CurrentCommand: "zsh"},
+			wantStateRetained: true,
+		},
+		{
+			name:  "removes state when its pane no longer exists",
+			agent: AgentClaude,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
+
+			originalPaneHasCodexProcess := paneHasCodexProcess
+			paneHasCodexProcess = func(tty string) bool {
+				return tt.childHasCodex && tty == "/dev/pts/1"
+			}
+			t.Cleanup(func() {
+				paneHasCodexProcess = originalPaneHasCodexProcess
+			})
+
+			state := &PaneState{
+				Agent:       tt.agent,
+				Session:     "main",
+				WindowIndex: "0",
+				PaneID:      "%1",
+				State:       StateWaitingInput,
+			}
+			if err := writeState(state); err != nil {
+				t.Fatalf("writeState: %v", err)
+			}
+
+			panes := make([]TmuxPane, 0, 1)
+			if tt.pane != nil {
+				panes = append(panes, *tt.pane)
+			}
+			got := cleanupDeadPanes([]*PaneState{state}, panes)
+
+			if tt.wantStateRetained {
+				if len(got) != 1 || got[0] != state {
+					t.Fatalf("cleanupDeadPanes() = %#v, want the persisted state", got)
+				}
+			} else if len(got) != 0 {
+				t.Fatalf("cleanupDeadPanes() = %#v, want no states", got)
+			}
+
+			_, err := os.Stat(stateFilePath(state.Session, state.WindowIndex, state.PaneID))
+			if tt.wantStateRetained && err != nil {
+				t.Fatalf("persisted state should remain: %v", err)
+			}
+			if !tt.wantStateRetained && !os.IsNotExist(err) {
+				t.Fatalf("persisted state should be removed, stat err = %v", err)
+			}
+		})
+	}
+}
+
 func TestFindStateByPaneID(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CLAUDE_PANE_STATE_DIR", dir)
@@ -945,6 +1284,30 @@ func TestDetermineState(t *testing.T) {
 			event:    "PostToolUse",
 			data:     map[string]any{"tool_name": "ExitPlanMode"},
 			expected: StateApprovalWaiting,
+		},
+		{
+			name:     "PostToolUseFailure interrupt -> waiting_input",
+			event:    "PostToolUseFailure",
+			data:     map[string]any{"is_interrupt": true},
+			expected: StateWaitingInput,
+		},
+		{
+			name:     "PostToolUseFailure non-interrupt -> running",
+			event:    "PostToolUseFailure",
+			data:     map[string]any{"is_interrupt": false},
+			expected: StateRunning,
+		},
+		{
+			name:     "PostToolUseFailure missing is_interrupt -> running",
+			event:    "PostToolUseFailure",
+			data:     map[string]any{},
+			expected: StateRunning,
+		},
+		{
+			name:     "PostToolUseFailure non-bool is_interrupt -> running",
+			event:    "PostToolUseFailure",
+			data:     map[string]any{"is_interrupt": "true"},
+			expected: StateRunning,
 		},
 		{
 			name:     "PermissionRequest -> approval_waiting",

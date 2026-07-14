@@ -170,16 +170,16 @@ func snapshotPaneStates(states []*PaneState) []*PaneState {
 }
 
 func persistChangedCodexLiveStates(previous, current []*PaneState, now time.Time) error {
-	byPaneID := make(map[string]*PaneState, len(previous))
+	byLocation := make(map[paneLocation]*PaneState, len(previous))
 	for _, ps := range previous {
-		byPaneID[ps.PaneID] = ps
+		byLocation[paneLocationFromState(ps)] = ps
 	}
 
 	for _, ps := range current {
 		if ps.Agent != AgentCodex {
 			continue
 		}
-		prior := byPaneID[ps.PaneID]
+		prior := byLocation[paneLocationFromState(ps)]
 		if prior != nil && prior.Agent == AgentCodex && prior.State == ps.State && prior.LastUpdatedAt == ps.LastUpdatedAt {
 			continue
 		}
@@ -430,15 +430,7 @@ func cmdUpdateState(args []string) error {
 	// (or is missing entirely). When agents have already swapped, deleting
 	// would clobber the new agent's pre-existing state.
 	if *event == "SessionEnd" {
-		existing := findStateByPaneIDForCurrentTmux(pane)
-		if existing == nil || existing.Agent == agent {
-			if existing != nil {
-				path := stateFilePath(existing.Session, existing.WindowIndex, existing.PaneID)
-				if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
-					fmt.Fprintf(os.Stderr, "cc-pane: warn: remove %s: %v\n", path, rerr)
-				}
-			}
-		}
+		removeSessionEndStateIfOwned(findStateByPaneIDForCurrentTmux(pane), agent)
 		return nil
 	}
 
@@ -458,6 +450,8 @@ func cmdUpdateState(args []string) error {
 		case *event == "UserPromptSubmit":
 			bgCount = 0
 		case *event == "Stop" && isUserInterrupt(data):
+			bgCount = 0
+		case *event == "PostToolUseFailure" && isToolFailureInterrupt(data):
 			bgCount = 0
 		case isBackgroundAgentLaunch(*event, data):
 			bgCount++
@@ -483,7 +477,7 @@ func cmdUpdateState(args []string) error {
 		return nil
 	}
 
-	if bgCount == 0 && hasPendingWork(prior) && newState == StateRunning {
+	if *event != "PostToolUseFailure" && bgCount == 0 && hasPendingWork(prior) && newState == StateRunning {
 		newState = StateWaitingInput
 	}
 
@@ -523,6 +517,19 @@ func cmdUpdateState(args []string) error {
 	return writeState(ps)
 }
 
+// removeSessionEndStateIfOwned removes the SessionEnd snapshot only when it
+// still matches the persisted state. This prevents an old SessionEnd hook from
+// deleting a newer state written at the same pane location.
+func removeSessionEndStateIfOwned(existing *PaneState, agent string) {
+	if existing == nil || existing.Agent != agent {
+		return
+	}
+	if _, err := removeStateIfUnchanged(existing); err != nil {
+		path := stateFilePath(existing.Session, existing.WindowIndex, existing.PaneID)
+		fmt.Fprintf(os.Stderr, "cc-pane: warn: remove %s: %v\n", path, err)
+	}
+}
+
 // --- setup / uninstall ---
 
 const ccPaneMarker = "cc-pane"
@@ -533,6 +540,7 @@ var requiredHookEvents = []string{
 	"SessionStart",
 	"PreToolUse",
 	"PostToolUse",
+	"PostToolUseFailure",
 	"PermissionRequest",
 	"Notification",
 	"PreCompact",
